@@ -1,0 +1,30 @@
+[project]
+name = "equity-strategy"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Jenish", email = "jenishthakkar2004@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "matplotlib>=3.11.2",
+    "nautilus-trader>=2.0.0rc5",
+    "numpy>=2.5.3",
+    "pandas>=3.0.6",
+    "polars>=2.0.0rc2",
+    "pyarrow>=25.0.1",
+    "pytest>=9.1.1",
+    "pyyaml>=6.0.3",
+]
+
+[project.scripts]
+equity-strategy = "equity_strategy:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+prerelease = "allow"
+

@@ -1,0 +1,43 @@
+data:
+  raw_dir: "data/raw"
+  sample_dir: "data/sample"
+  processed_dir: "data/processed"
+  output_dir: "data/outputs"
+  start_date: null
+  end_date: null
+
+strategy:
+  rebalance_frequency: "monthly"
+
+universe:
+  target_index: "Nifty 500 + Midcap 150 + Smallcap 500 + Microcap 250"
+
+features:
+  momentum_short: 21
+  momentum_medium: 63
+  momentum_long: 252
+  moving_average_short: 50
+  moving_average_long: 200
+  volatility_window: 21
+
+signal:
+  momentum_weight_short: 0.4
+  momentum_weight_medium: 0.6
+  trend_weight_short: 0.5
+  trend_weight_long: 0.5
+  momentum_final_weight: 0.6
+  trend_final_weight: 0.4
+
+portfolio:
+  candidates: 50
+  holdings: 30
+  method: "equal_weight"
+
+backtest:
+  starting_capital: 1000000.0
+  venue: "NSE"
+
+costs:
+  brokerage: 0.0
+  slippage: 0.0
+  taxes: 0.0
