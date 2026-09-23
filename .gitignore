@@ -1,3 +1,5 @@
+# Virtual environments
+.venv
 # Python-generated files
 __pycache__/
 *.py[oc]
@@ -7,6 +9,4 @@ wheels/
 *.egg-info
 *docx
 *.csv
-data/
-# Virtual environments
-.venv
+/data
