@@ -57,10 +57,10 @@ BRIDGE_HOST=127.0.0.1 BRIDGE_PORT=8080 uv run python bridge/server.py
 ## 🔒 5. What Information is Intentionally NOT Exposed
 
 The bridge strictly blocks access to the rest of the repository:
-- **No Source Code**: `src/`, `run_research.py`, `run_backtest.py` are hidden.
-- **No Market Data**: `data/raw/`, `data/sample/`, `data/outputs/` are hidden.
+- **No Source Code**: `src/` directory is hidden.
+- **No Market Data**: `data/raw/` and other data directories are hidden.
 - **No Credentials / Config**: `.env`, API keys, `pyproject.toml`, `.git/` are hidden.
-- **No Arbitrary File Access**: Directory traversal attacks (`/../`, `/src/`, etc.) return `403` or `404` error responses.
+- **No Arbitrary File Access**: Directory traversal attacks (`/../`, `/src/`, etc.) return `404` error responses.
 
 ---
 

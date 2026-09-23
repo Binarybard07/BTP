@@ -8,7 +8,7 @@ from typing import Dict
 # Locate project root directory relative to bridge/server.py
 BRIDGE_DIR = pathlib.Path(__file__).resolve().parent
 PROJECT_ROOT = BRIDGE_DIR.parent
-DOCS_DIR = PROJECT_ROOT / "docs"
+DOCS_DIR = PROJECT_ROOT/ "bridge" / "docs"
 
 # Hardcoded mapping of exposed endpoints to documentation files
 ENDPOINT_FILE_MAP: Dict[str, str] = {

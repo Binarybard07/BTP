@@ -26,9 +26,9 @@ After Antigravity completes coding, testing, or backtest execution:
 
 Documentation entries must strictly categorize information under one of four headers:
 
-- **`DECISION`**: The architectural or methodology rule established (e.g. "Monthly rebalancing on $T+1$").
-- **`IMPLEMENTATION`**: What Antigravity actually built in code (e.g. "Added `MonthlyRebalancer` class in `src/equity_strategy/research/rebalancer.py`").
-- **`RESULT`**: Concrete empirical output from tests or backtests (e.g. "13/13 unit tests passed; Sharpe ratio 1.58 on synthetic data").
-- **`INTERPRETATION`**: Analysis of what the result means and recommended next actions (e.g. "Software functionality verified; financial validation pending on real historical data").
+- **`DECISION`**: The architectural or methodology rule established (e.g. "Chronological bar-by-bar strategy decision logic").
+- **`IMPLEMENTATION`**: What Antigravity actually built in code (e.g. "Added `FeatureDatasetWriter` class in `src/equity_strategy/features/writer.py`").
+- **`RESULT`**: Concrete empirical output from tests or backtests (e.g. "4/4 pytest modules passing").
+- **`INTERPRETATION`**: Analysis of what the result means and recommended next actions (e.g. "Software functionality verified; ready for Nautilus-based strategy integration").
 
 These categories must **never** be mixed or fabricated.
