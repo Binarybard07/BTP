@@ -28,10 +28,14 @@ def test_trend_features_calculation():
 
     df_trend = compute_trend_features(df, short_ma=50, long_ma=200)
 
+    ma50_col = "close_to_ma50" if "close_to_ma50" in df_trend.columns else "close_ma50"
+    ma200_col = "close_to_ma200" if "close_to_ma200" in df_trend.columns else "close_ma200"
+
     # Constant price => Close / MA = 1.0 after window
-    assert np.isclose(df_trend["close_ma50"].iloc[50], 1.0)
-    assert np.isclose(df_trend["close_ma200"].iloc[200], 1.0)
-    assert df_trend["close_ma50"].iloc[:49].isna().all()
+    assert np.isclose(df_trend[ma50_col].iloc[50], 1.0)
+    assert np.isclose(df_trend[ma200_col].iloc[200], 1.0)
+    assert df_trend[ma50_col].iloc[:49].isna().all()
+
 
 def test_symbol_data_isolation():
     """Verify that features are computed independently per symbol without cross-contamination."""

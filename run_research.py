@@ -2,7 +2,6 @@ import argparse
 import logging
 import pathlib
 import yaml
-import pandas as pd
 
 from equity_strategy.data.loader import CSVDataLoader
 from equity_strategy.research.target_generator import TargetWeightGenerator

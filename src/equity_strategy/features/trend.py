@@ -7,8 +7,8 @@ def compute_trend_features(
 ) -> pd.DataFrame:
     """
     Computes trend features per symbol:
-    - close_ma50: Close / MA50
-    - close_ma200: Close / MA200
+    - close_to_ma50: Close / MA50
+    - close_to_ma200: Close / MA200
     """
     df = df.copy()
     close = df["Close"]
@@ -16,7 +16,7 @@ def compute_trend_features(
     ma_short = close.rolling(window=short_ma, min_periods=short_ma).mean()
     ma_long = close.rolling(window=long_ma, min_periods=long_ma).mean()
 
-    df[f"close_ma{short_ma}"] = close / ma_short
-    df[f"close_ma{long_ma}"] = close / ma_long
+    df[f"close_to_ma{short_ma}"] = close / ma_short
+    df[f"close_to_ma{long_ma}"] = close / ma_long
 
     return df

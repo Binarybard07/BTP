@@ -1,5 +1,3 @@
-import os
-import glob
 import pathlib
 from typing import List, Union
 import pandas as pd
@@ -11,7 +9,7 @@ class CSVDataLoader:
     Recursively discovers, loads, standardizes, sorts, and validates raw OHLCV market data CSVs.
     """
 
-    REQUIRED_COLUMNS = ["Date", "Symbol", "Open", "High", "Low", "Close", "Volume"]
+    REQUIRED_COLUMNS = ["Date", "Open", "High", "Low", "Close", "Volume", "Symbol"]
 
     def __init__(self, data_dir: Union[str, pathlib.Path]):
         self.data_dir = pathlib.Path(data_dir)
@@ -80,7 +78,8 @@ class CSVDataLoader:
         combined = pd.concat(dfs, ignore_index=True)
 
         # Parse Date
-        combined["Date"] = pd.to_datetime(combined["Date"])
+        combined["Date"] = pd.to_datetime(combined["Date"], format="mixed", dayfirst=True)
+
         combined["Symbol"] = combined["Symbol"].astype(str).str.strip().str.upper()
 
         # Numeric conversions

@@ -1,4 +1,3 @@
-from typing import List
 import pandas as pd
 
 class DataValidationError(Exception):
@@ -10,7 +9,7 @@ class DataValidator:
     Validates market data schemas, numeric ranges, price relationships, and uniqueness constraints.
     """
 
-    REQUIRED_COLUMNS = ["Date", "Symbol", "Open", "High", "Low", "Close", "Volume"]
+    REQUIRED_COLUMNS = ["Date", "Open", "High", "Low", "Close", "Volume", "Symbol"]
 
     def validate(self, df: pd.DataFrame) -> bool:
         """

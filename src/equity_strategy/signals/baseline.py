@@ -37,9 +37,13 @@ class BaselineSignal(SignalModel):
 
         df_out = df.copy()
 
+        ma50_col = "close_to_ma50" if "close_to_ma50" in df_out.columns else "close_ma50"
+        ma200_col = "close_to_ma200" if "close_to_ma200" in df_out.columns else "close_ma200"
+        required_features = ["return_21", "return_63", ma50_col, ma200_col]
+
         # Identify missing values in required features
         valid_mask = pd.Series(True, index=df_out.index)
-        for feat in self.REQUIRED_FEATURES:
+        for feat in required_features:
             if feat not in df_out.columns:
                 raise KeyError(f"Required feature '{feat}' missing from input DataFrame.")
             valid_mask = valid_mask & (~df_out[feat].isna())
@@ -59,8 +63,9 @@ class BaselineSignal(SignalModel):
         # Perform cross-sectional percentile ranking per Date
         rank_21 = df_valid.groupby("Date")["return_21"].rank(pct=True)
         rank_63 = df_valid.groupby("Date")["return_63"].rank(pct=True)
-        rank_ma50 = df_valid.groupby("Date")["close_ma50"].rank(pct=True)
-        rank_ma200 = df_valid.groupby("Date")["close_ma200"].rank(pct=True)
+        rank_ma50 = df_valid.groupby("Date")[ma50_col].rank(pct=True)
+        rank_ma200 = df_valid.groupby("Date")[ma200_col].rank(pct=True)
+
 
         df_valid["MomentumScore"] = (self.w_mom_short * rank_21) + (self.w_mom_med * rank_63)
         df_valid["TrendScore"] = (self.w_trend_short * rank_ma50) + (self.w_trend_long * rank_ma200)
