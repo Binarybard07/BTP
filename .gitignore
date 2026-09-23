@@ -10,3 +10,4 @@ wheels/
 *docx
 *.csv
 /data
+*.html
