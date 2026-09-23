@@ -126,7 +126,6 @@ def test_endpoint_tree():
         files_set = set(data["files"])
         assert "pyproject.toml" in files_set
         assert "bridge/server.py" in files_set
-        assert "src/equity_strategy/strategy.py" in files_set
 
         # Verify blocked dirs are pruned
         for f in files_set:

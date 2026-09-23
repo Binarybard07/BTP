@@ -12,73 +12,98 @@ from nautilus_trader.model import (
 )
 from nautilus_trader.trading import Strategy, StrategyConfig
 
-from equity_strategy.data.loader import CSVDataLoader
 from equity_strategy.data.nautilus_data import NautilusDataConverter
-from equity_strategy.features.engine import FeatureEngine
+from equity_strategy.data.strategy_data import PreparedStrategyData, StrategyDataPipeline
 
 
 class MACrossoverConfig(StrategyConfig):
     """
-    Configuration for the 50/200 Moving Average Crossover Strategy.
+    Simplified configuration for the 50/200 Moving Average Crossover Strategy.
+
+    Intended user flow:
+        raw data source (CSV file, directory, or DataFrame)
+            -> MACrossoverStrategy
+            -> StrategyDataPipeline
+            -> Nautilus
+            -> Strategy execution
+
+    The user does not need to manually construct featured_df, Equity, BarType, or Bars.
+    Direct passing of instrument_id / bar_type / featured_df remains supported for mock testing.
     """
 
     def __init__(
         self,
-        instrument_id: InstrumentId,
-        bar_type: BarType,
+        data_source: Optional[Union[str, pathlib.Path, pd.DataFrame]] = None,
+        symbol: Optional[str] = None,
+        venue: str = "NSE",
         trade_size: Quantity = Quantity.from_int(1),
+        instrument_id: Optional[InstrumentId] = None,
+        bar_type: Optional[BarType] = None,
         featured_df: Optional[pd.DataFrame] = None,
-        data_dir: Optional[Union[str, pathlib.Path]] = None,
+        feature_config: Optional[Dict[str, Any]] = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
+        self.data_source = data_source
+        self.symbol = symbol
+        self.venue = venue
+        self.trade_size = trade_size
         self.instrument_id = instrument_id
         self.bar_type = bar_type
-        self.trade_size = trade_size
         self.featured_df = featured_df
-        self.data_dir = data_dir
+        self.feature_config = feature_config
 
 
 class MACrossoverStrategy(Strategy):
     """
     Concrete 50/200 Moving Average Crossover Strategy built as a Nautilus Strategy.
 
-    Orchestrates:
-    - Loading market data via CSVDataLoader
-    - Computing trend features via FeatureEngine (using close_to_ma50 and close_to_ma200)
-    - Converting data into Nautilus objects via NautilusDataConverter
-    - Executing on_start() / on_bar() lifecycle for 50/200 long-only crossover logic:
-        * Entry (Bullish Crossover):
-          previous 50 relationship <= 200 relationship AND current 50 relationship > 200 relationship
-        * Exit (Bearish Crossover):
-          previous 50 relationship >= 200 relationship AND current 50 relationship < 200 relationship
+    Separation of Concerns:
+    - StrategyDataPipeline: handles common data plumbing (loader -> feature engine -> converter).
+    - MACrossoverStrategy: handles MA crossover strategy rules and orchestrates data preparation.
+    - NautilusDataConverter: handles conversion into Nautilus-native objects.
+
+    Strategy Rules (Long-Only):
+    - Entry (Golden Cross):
+      previous 50 relationship <= 200 relationship AND current 50 relationship > 200 relationship
+    - Exit (Death Cross):
+      previous 50 relationship >= 200 relationship AND current 50 relationship < 200 relationship
     """
 
     def __init__(self, config: MACrossoverConfig):
         super().__init__(config)
-        self.instrument_id: InstrumentId = config.instrument_id
-        self.bar_type: BarType = config.bar_type
         self.trade_size: Quantity = config.trade_size
-        self.data_dir = config.data_dir
-        self.featured_df = config.featured_df
+        self.pipeline = StrategyDataPipeline(feature_config=config.feature_config)
+        self._converter = self.pipeline.converter
 
-        self._converter = NautilusDataConverter()
+        self.featured_df: Optional[pd.DataFrame] = config.featured_df
+        self.bars: List[Bar] = []
         self._prev_ma50: Optional[float] = None
         self._prev_ma200: Optional[float] = None
         self._local_position_state: str = "FLAT"
         self._decisions_log: List[Dict[str, Any]] = []
         self._features_by_ts: Dict[int, Tuple[float, float]] = {}
 
-        if self.featured_df is not None:
-            self._index_features(self.featured_df)
-        elif self.data_dir is not None:
-            df_featured, _, _, _ = self.prepare_data(
-                self.data_dir,
-                symbol=str(self.instrument_id.symbol),
-                venue=str(self.instrument_id.venue),
+        if config.data_source is not None:
+            prepared = self.pipeline.prepare(
+                data_source=config.data_source,
+                symbol=config.symbol,
+                venue=config.venue,
             )
-            self.featured_df = df_featured
-            self._index_features(df_featured)
+            self.instrument_id: InstrumentId = prepared.equity.id
+            self.bar_type: BarType = prepared.bar_type
+            self.bars = prepared.bars
+            self.featured_df = prepared.featured_df
+            self._index_features(self.featured_df)
+        elif config.instrument_id is not None and config.bar_type is not None:
+            self.instrument_id = config.instrument_id
+            self.bar_type = config.bar_type
+            if config.featured_df is not None:
+                self._index_features(config.featured_df)
+        else:
+            raise ValueError(
+                "MACrossoverConfig requires either 'data_source' or ('instrument_id' and 'bar_type')."
+            )
 
     @classmethod
     def prepare_data(
@@ -87,68 +112,13 @@ class MACrossoverStrategy(Strategy):
         symbol: Optional[str] = None,
         venue: str = "NSE",
         config: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[pd.DataFrame, Equity, BarType, List[Bar]]:
+    ) -> PreparedStrategyData:
         """
-        Orchestration helper connecting:
-        CSVDataLoader -> DataValidator -> FeatureEngine -> NautilusDataConverter.
-
-        Can accept:
-        - A directory path containing CSVs
-        - A specific symbol's CSV file path
-        - An already loaded/validated DataFrame
-
-        Returns:
-            (featured_df, equity, bar_type, bars)
+        Convenience orchestration helper delegating to StrategyDataPipeline.
+        Returns PreparedStrategyData containing (featured_df, equity, bar_type, bars).
         """
-        if isinstance(data_source, pd.DataFrame):
-            df_raw = data_source.copy()
-            sym_clean = symbol.strip().upper() if symbol else str(df_raw["Symbol"].iloc[0]).strip().upper()
-            df_sym = df_raw[df_raw["Symbol"] == sym_clean].reset_index(drop=True)
-        else:
-            p = pathlib.Path(data_source)
-            if symbol and p.is_dir() and (p / f"{symbol.strip().upper()}.csv").exists():
-                return cls.prepare_data(p / f"{symbol.strip().upper()}.csv", symbol=symbol, venue=venue, config=config)
-            elif p.is_file():
-                df = pd.read_csv(p)
-                col_map = {col: str(col).strip() for col in df.columns}
-                df = df.rename(columns=col_map)
-                lower_map = {c.lower(): c for c in df.columns}
-                rename_dict = {}
-                for std_col in ["Date", "Open", "High", "Low", "Close", "Volume", "Symbol"]:
-                    if std_col.lower() in lower_map:
-                        rename_dict[lower_map[std_col.lower()]] = std_col
-                df = df.rename(columns=rename_dict)
-                if "Symbol" not in df.columns:
-                    df["Symbol"] = symbol.upper() if symbol else p.stem.upper()
-                df["Date"] = pd.to_datetime(df["Date"], format="mixed", dayfirst=True)
-                df["Symbol"] = df["Symbol"].astype(str).str.strip().str.upper()
-                for c in ["Open", "High", "Low", "Close", "Volume"]:
-                    df[c] = pd.to_numeric(df[c], errors="coerce")
-                df_sym = df.sort_values(by=["Symbol", "Date"]).reset_index(drop=True)
-                sym_clean = str(df_sym["Symbol"].iloc[0]).strip().upper()
-            else:
-                loader = CSVDataLoader(p)
-                df_raw = loader.load_data(validate=True)
-                if symbol:
-                    sym_clean = symbol.strip().upper()
-                    df_sym = df_raw[df_raw["Symbol"] == sym_clean].reset_index(drop=True)
-                    if df_sym.empty:
-                        raise ValueError(f"Symbol '{symbol}' not found in data directory '{data_source}'.")
-                else:
-                    sym_clean = str(df_raw["Symbol"].iloc[0]).strip().upper()
-                    df_sym = df_raw[df_raw["Symbol"] == sym_clean].reset_index(drop=True)
-
-        # Feature extraction
-        engine = FeatureEngine(config)
-        df_featured = engine.transform(df_sym)
-
-        # Nautilus data conversion
-        converter = NautilusDataConverter()
-        equity = converter.create_equity(symbol=sym_clean, venue=venue)
-        bar_type = converter.create_bar_type(equity.id)
-        bars = converter.df_to_bars(df_featured, bar_type=bar_type)
-
-        return df_featured, equity, bar_type, bars
+        pipeline = StrategyDataPipeline(feature_config=config)
+        return pipeline.prepare(data_source, symbol=symbol, venue=venue)
 
     def set_features(self, df: pd.DataFrame):
         """Sets and indexes featured DataFrame for bar lookups."""
@@ -194,7 +164,7 @@ class MACrossoverStrategy(Strategy):
         try:
             self.subscribe_bars(self.bar_type)
         except RuntimeError:
-            # When testing strategy standalone without registered trader engine
+            # Standalone mode / unregistered trader
             pass
 
     def on_bar(self, bar: Bar):
@@ -279,3 +249,43 @@ class MACrossoverStrategy(Strategy):
             self.close_all_positions(self.instrument_id)
         except RuntimeError:
             pass
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run MA Crossover Strategy on Indian equity data.")
+    parser.add_argument(
+        "--data-source",
+        type=str,
+        default="data/raw/Final_NIFTY100_EoD_Data",
+        help="Path to CSV file or directory containing market data.",
+    )
+    parser.add_argument(
+        "--symbol",
+        type=str,
+        default="ABB",
+        help="Stock symbol to run (e.g. ABB).",
+    )
+    args = parser.parse_args()
+
+    print(f"=== Initializing MA Crossover Strategy for {args.symbol} ===")
+    config = MACrossoverConfig(
+        data_source=args.data_source,
+        symbol=args.symbol,
+    )
+    strategy = MACrossoverStrategy(config)
+    strategy.on_start()
+
+    print(f"Instrument: {strategy.instrument_id}, BarType: {strategy.bar_type}")
+    print(f"Processing {len(strategy.bars)} bars...")
+
+    for bar in strategy.bars:
+        strategy.on_bar(bar)
+
+    print(f"Completed! Total strategy decisions: {len(strategy.decisions_log)}")
+    print(f"Final position state: {strategy.position_state}")
+    if strategy.decisions_log:
+        print("Sample decisions:")
+        for dec in strategy.decisions_log[:5]:
+            print(f"  {dec['action']} @ Close {dec['close']:.2f} (MA50={dec['ma50']:.2f}, MA200={dec['ma200']:.2f})")

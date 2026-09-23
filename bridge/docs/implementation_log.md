@@ -50,3 +50,19 @@
 - **Verification**:
   - Unit tests in `tests/test_nautilus_data.py` verified instrument creation, bar type generation, timestamp conversion, bar extraction, multi-symbol conversion, and strategy golden-cross/death-cross event execution.
   - Full pytest suite (32/32 tests) passing.
+
+## Entry 004: StrategyDataPipeline & MA Crossover Refactor
+- **Date**: 2026-09-24
+- **Author**: Antigravity
+- **Files Created/Modified**:
+  - `src/equity_strategy/data/strategy_data.py`: Added `StrategyDataPipeline` and `PreparedStrategyData`.
+  - `src/equity_strategy/data/loader.py`: Enabled `CSVDataLoader` single-file handling in `discover_files()`.
+  - `src/equity_strategy/strategies/ma_crossover_strategy.py`: Refactored to delegate data preparation to `StrategyDataPipeline`, simplified `MACrossoverConfig`, and added runnable CLI entry point.
+  - `tests/test_strategy_data.py`: Added focused unit tests for `StrategyDataPipeline`.
+  - `tests/test_bridge.py`: Updated `/tree` test expectation.
+- **Features Implemented**:
+  - Unified data flow: `raw data -> CSVDataLoader -> FeatureEngine -> NautilusDataConverter -> prepared Nautilus data`.
+  - Simplified user-facing config: users provide `data_source` and `symbol` without manually assembling intermediate objects.
+- **Verification**:
+  - `uv run pytest` passed 34/34 unit tests.
+  - Verified runnable entry point with real historical ABB.NSE data (`5786` bars processed).

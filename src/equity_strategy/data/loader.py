@@ -19,6 +19,9 @@ class CSVDataLoader:
         if not self.data_dir.exists():
             raise FileNotFoundError(f"Data directory '{self.data_dir}' does not exist.")
 
+        if self.data_dir.is_file() and self.data_dir.suffix.lower() == ".csv":
+            return [self.data_dir]
+
         csv_files = sorted(list(self.data_dir.rglob("*.csv")))
         if not csv_files:
             raise FileNotFoundError(f"No CSV files found in '{self.data_dir}'.")
