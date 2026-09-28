@@ -25,7 +25,7 @@ class NautilusDataConverter:
     DEFAULT_VENUE = "NSE"
     DEFAULT_CURRENCY = "INR"
     DEFAULT_PRICE_PRECISION = 2
-    DEFAULT_PRICE_INCREMENT = 0.05
+    DEFAULT_PRICE_INCREMENT = 0.01
     DEFAULT_LOT_SIZE = 1
 
     @staticmethod
