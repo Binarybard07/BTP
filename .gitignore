@@ -12,3 +12,5 @@ wheels/
 /data
 *.html
 *.pdf
+*.txt
+*.pkl

@@ -2,7 +2,8 @@ import copy
 from dataclasses import dataclass, field
 import logging
 import pathlib
-from typing import Any, Dict, List, Optional, Union
+import pickle
+from typing import Any, Dict, List, Optional, Tuple, Union
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ from equity_strategy.portfolio.equal_weight import EqualWeightPortfolio
 class StrategyResult:
     """
     Encapsulates the complete outputs from an ML strategy orchestration run.
+    Provides methods for human-readable reporting and lossless serialization.
     """
 
     target_weights: pd.DataFrame
@@ -37,6 +39,206 @@ class StrategyResult:
     rebalance_dates: List[pd.Timestamp]
     training_df: pd.DataFrame
     featured_df: pd.DataFrame
+
+    def to_text(self) -> str:
+        """
+        Returns a structured, human-readable summary of the complete strategy result.
+        Shows informative overviews and representative samples without dumping huge DataFrames.
+        """
+        lines: List[str] = []
+        sep = "=" * 80
+        sub_sep = "-" * 80
+
+        lines.append(sep)
+        lines.append("ML STRATEGY EXECUTION RESULT SUMMARY")
+        lines.append(sep)
+
+        # 1. Rebalance Overview
+        lines.append("\n1. REBALANCE OVERVIEW")
+        lines.append(sub_sep)
+        total_rebalances = len(self.rebalance_dates)
+        lines.append(f"Total Rebalance Events: {total_rebalances}")
+        if total_rebalances > 0:
+            first_reb = self.rebalance_dates[0].strftime("%Y-%m-%d")
+            last_reb = self.rebalance_dates[-1].strftime("%Y-%m-%d")
+            lines.append(f"First Rebalance Date:   {first_reb}")
+            lines.append(f"Last Rebalance Date:    {last_reb}")
+            lines.append("\nRebalance Schedule:")
+            if total_rebalances <= 24:
+                for d in self.rebalance_dates:
+                    lines.append(f"  - {d.strftime('%Y-%m-%d')}")
+            else:
+                for d in self.rebalance_dates[:10]:
+                    lines.append(f"  - {d.strftime('%Y-%m-%d')}")
+                lines.append(f"  ... [{total_rebalances - 20} intermediate dates omitted] ...")
+                for d in self.rebalance_dates[-10:]:
+                    lines.append(f"  - {d.strftime('%Y-%m-%d')}")
+        else:
+            lines.append("No rebalance dates executed.")
+
+        # 2. Featured Dataset Summary
+        lines.append("\n2. FEATURED DATASET SUMMARY")
+        lines.append(sub_sep)
+        if self.featured_df is not None and not self.featured_df.empty:
+            f_rows, f_cols = self.featured_df.shape
+            lines.append(f"Shape:            {f_rows:,} rows x {f_cols} columns")
+            lines.append(f"Columns ({len(self.featured_df.columns)}):   {', '.join(self.featured_df.columns.astype(str))}")
+            if "Date" in self.featured_df.columns:
+                f_min_date = pd.to_datetime(self.featured_df["Date"]).min().strftime("%Y-%m-%d")
+                f_max_date = pd.to_datetime(self.featured_df["Date"]).max().strftime("%Y-%m-%d")
+                lines.append(f"Date Range:       {f_min_date} to {f_max_date}")
+            if "Symbol" in self.featured_df.columns:
+                lines.append(f"Unique Symbols:   {self.featured_df['Symbol'].nunique()}")
+        else:
+            lines.append("Featured dataset is empty or None.")
+
+        # 3. Training Dataset Summary
+        lines.append("\n3. TRAINING DATASET SUMMARY")
+        lines.append(sub_sep)
+        if self.training_df is not None and not self.training_df.empty:
+            t_rows, t_cols = self.training_df.shape
+            lines.append(f"Shape:            {t_rows:,} rows x {t_cols} columns")
+            lines.append(f"Columns ({len(self.training_df.columns)}):   {', '.join(self.training_df.columns.astype(str))}")
+            if "Date" in self.training_df.columns:
+                t_min_date = pd.to_datetime(self.training_df["Date"]).min().strftime("%Y-%m-%d")
+                t_max_date = pd.to_datetime(self.training_df["Date"]).max().strftime("%Y-%m-%d")
+                lines.append(f"Date Range:       {t_min_date} to {t_max_date}")
+            if "Symbol" in self.training_df.columns:
+                lines.append(f"Unique Symbols:   {self.training_df['Symbol'].nunique()}")
+        else:
+            lines.append("Training dataset is empty or None.")
+
+        # 4. Selected Stocks by Date
+        lines.append("\n4. SELECTED STOCKS BY REBALANCE DATE")
+        lines.append(sub_sep)
+        total_selected_dates = len(self.selected_stocks_by_date)
+        lines.append(f"Total Selection Periods: {total_selected_dates}")
+        if total_selected_dates > 0:
+            sample_dates = list(self.selected_stocks_by_date.keys())
+            if total_selected_dates <= 12:
+                display_dates = sample_dates
+                omitted = 0
+            else:
+                display_dates = sample_dates[:5] + sample_dates[-5:]
+                omitted = total_selected_dates - 10
+
+            for i, dt in enumerate(display_dates):
+                if omitted > 0 and i == 5:
+                    lines.append(f"  ... [{omitted} intermediate selection periods omitted] ...")
+                syms = self.selected_stocks_by_date[dt]
+                dt_str = dt.strftime("%Y-%m-%d")
+                lines.append(f"  {dt_str} ({len(syms)} stocks): {', '.join(syms)}")
+        else:
+            lines.append("No selected stocks recorded.")
+
+        # 5. Predictions by Date
+        lines.append("\n5. PREDICTIONS SUMMARY BY REBALANCE DATE")
+        lines.append(sub_sep)
+        total_pred_dates = len(self.predictions_by_date)
+        lines.append(f"Total Prediction Snapshots: {total_pred_dates}")
+        if total_pred_dates > 0:
+            pred_sample_dates = list(self.predictions_by_date.keys())
+            focus_dates = [pred_sample_dates[0]]
+            if len(pred_sample_dates) > 1:
+                focus_dates.append(pred_sample_dates[-1])
+
+            for dt in focus_dates:
+                df_pred = self.predictions_by_date[dt]
+                dt_str = dt.strftime("%Y-%m-%d")
+                lines.append(f"\nSnapshot for {dt_str} (Evaluated Universe: {len(df_pred)} stocks):")
+                if not df_pred.empty and "score" in df_pred.columns:
+                    top5 = df_pred.sort_values(by="score", ascending=False).head(5)
+                    bot5 = df_pred.sort_values(by="score", ascending=False).tail(5)
+                    lines.append("  Top 5 Predicted Scores:")
+                    for _, row in top5.iterrows():
+                        lines.append(f"    - {row['Symbol']}: {row['score']:.6f}")
+                    lines.append("  Bottom 5 Predicted Scores:")
+                    for _, row in bot5.iterrows():
+                        lines.append(f"    - {row['Symbol']}: {row['score']:.6f}")
+                    s_min = df_pred["score"].min()
+                    s_mean = df_pred["score"].mean()
+                    s_max = df_pred["score"].max()
+                    s_std = df_pred["score"].std()
+                    lines.append(f"  Score Distribution: min={s_min:.6f}, mean={s_mean:.6f}, max={s_max:.6f}, std={s_std:.6f}")
+        else:
+            lines.append("No prediction snapshots recorded.")
+
+        # 6. Target Weights
+        lines.append("\n6. TARGET WEIGHTS SUMMARY")
+        lines.append(sub_sep)
+        if self.target_weights is not None and not self.target_weights.empty:
+            w_rows = len(self.target_weights)
+            lines.append(f"Total Weight Allocations: {w_rows:,}")
+            if "Symbol" in self.target_weights.columns:
+                lines.append(f"Unique Symbols Held:      {self.target_weights['Symbol'].nunique()}")
+            if "Weight" in self.target_weights.columns:
+                w_min = self.target_weights["Weight"].min()
+                w_mean = self.target_weights["Weight"].mean()
+                w_max = self.target_weights["Weight"].max()
+                lines.append(f"Weight Stats:             min={w_min:.4f}, mean={w_mean:.4f}, max={w_max:.4f}")
+
+            lines.append("\nSample Target Weights Head:")
+            head_str = self.target_weights.head(10).to_string(index=False)
+            for line in head_str.splitlines():
+                lines.append(f"  {line}")
+
+            if w_rows > 10:
+                lines.append("\nSample Target Weights Tail:")
+                tail_str = self.target_weights.tail(10).to_string(index=False)
+                for line in tail_str.splitlines():
+                    lines.append(f"  {line}")
+        else:
+            lines.append("Target weights table is empty.")
+
+        lines.append("\n" + sep)
+        return "\n".join(lines)
+
+    def save(
+        self,
+        output_dir: Union[str, pathlib.Path],
+    ) -> Tuple[pathlib.Path, pathlib.Path]:
+        """
+        Saves the complete StrategyResult object and its human-readable text summary.
+
+        Outputs:
+            - strategy_result.pkl: Lossless pickled StrategyResult instance.
+            - strategy_result.txt: Human-readable text summary.
+
+        Parameters:
+            output_dir: Directory where result files will be saved. Created if it does not exist.
+
+        Returns:
+            Tuple[pathlib.Path, pathlib.Path]: Paths to (pkl_file, txt_file).
+        """
+        out_path = pathlib.Path(output_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+
+        pkl_file = out_path / "strategy_result.pkl"
+        txt_file = out_path / "strategy_result.txt"
+
+        # 1. Lossless object serialization via standard pickle
+        with open(pkl_file, "wb") as f:
+            pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+        # 2. Human-readable text representation
+        txt_content = self.to_text()
+        txt_file.write_text(txt_content, encoding="utf-8")
+
+        logger.info("Saved complete StrategyResult to: %s", pkl_file)
+        logger.info("Saved human-readable summary to:   %s", txt_file)
+
+        return pkl_file, txt_file
+
+    @classmethod
+    def load(cls, pkl_path: Union[str, pathlib.Path]) -> "StrategyResult":
+        """
+        Loads a StrategyResult instance from a pickle file.
+        """
+        with open(pkl_path, "rb") as f:
+            obj = pickle.load(f)
+        if not isinstance(obj, cls):
+            raise TypeError(f"Expected {cls.__name__}, got {type(obj).__name__}")
+        return obj
 
 
 @dataclass
@@ -312,6 +514,7 @@ class XGBoostRegressorStrategy:
         return strategy.execute(data_source=data_source)
 
 
+
 # Aliases for convenience
 XGBoostStrategyConfig = XGBoostRegressorConfig
 
@@ -321,6 +524,6 @@ if __name__ == "__main__":
     logger.info("=== XGBoost Regressor Strategy Run Completed ===")
     logger.info("Total rebalance dates: %d", len(result.rebalance_dates))
     logger.info("Total weight records: %d", len(result.target_weights))
+    result.save("output/strategy_result")
     if not result.target_weights.empty:
         logger.info("Sample Target Weights:\n%s", result.target_weights.head(10))
-
