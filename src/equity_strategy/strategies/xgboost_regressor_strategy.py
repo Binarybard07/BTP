@@ -1,8 +1,12 @@
 import copy
 from dataclasses import dataclass, field
+import logging
 import pathlib
 from typing import Any, Dict, List, Optional, Union
 import pandas as pd
+
+logger = logging.getLogger(__name__)
+
 
 from equity_strategy.data.loader import CSVDataLoader
 from equity_strategy.features.engine import FeatureEngine
@@ -314,9 +318,9 @@ XGBoostStrategyConfig = XGBoostRegressorConfig
 
 if __name__ == "__main__":
     result = XGBoostRegressorStrategy.run()
-    print("=== XGBoost Regressor Strategy Run Completed ===")
-    print(f"Total rebalance dates: {len(result.rebalance_dates)}")
-    print(f"Total weight records: {len(result.target_weights)}")
+    logger.info("=== XGBoost Regressor Strategy Run Completed ===")
+    logger.info("Total rebalance dates: %d", len(result.rebalance_dates))
+    logger.info("Total weight records: %d", len(result.target_weights))
     if not result.target_weights.empty:
-        print("\nSample Target Weights:")
-        print(result.target_weights.head(10))
+        logger.info("Sample Target Weights:\n%s", result.target_weights.head(10))
+

@@ -1,3 +1,4 @@
+import logging
 import pathlib
 from typing import Dict, List, Optional, Tuple, Union
 import pandas as pd
@@ -19,6 +20,9 @@ from nautilus_trader.model import (
 from nautilus_trader.trading import Strategy, StrategyConfig
 from equity_strategy.data.nautilus_data import NautilusDataConverter
 from equity_strategy.data.strategy_data import StrategyDataPipeline
+
+logger = logging.getLogger(__name__)
+
 
 
 class MACrossoverConfig(StrategyConfig):
@@ -270,7 +274,12 @@ class MACrossoverStrategy(Strategy):
                 )
             except Exception as exc:
                 err_msg = f"{type(exc).__name__}: {exc}"
-                print(f"[DATA VALIDATION SKIP] File: '{filename}', Symbol: '{sym}' -> Error: {err_msg}")
+                logger.warning(
+                    "[DATA VALIDATION SKIP] File: '%s', Symbol: '%s' -> Error: %s",
+                    filename,
+                    sym,
+                    err_msg,
+                )
                 skipped_files.append((filename, sym, err_msg))
                 continue
 
@@ -285,9 +294,13 @@ class MACrossoverStrategy(Strategy):
             )
 
         if skipped_files:
-            print(f"\nData validation summary: {len(bar_types)} loaded, {len(skipped_files)} skipped.")
+            logger.info(
+                "Data validation summary: %d loaded, %d skipped.",
+                len(bar_types),
+                len(skipped_files),
+            )
             for fname, s, err in skipped_files:
-                print(f"  - File: '{fname}', Symbol: '{s}' -> {err}")
+                logger.warning("  - File: '%s', Symbol: '%s' -> %s", fname, s, err)
 
         engine.sort_data()
 
@@ -316,12 +329,13 @@ if __name__ == "__main__":
             title="MACrossover Strategy Backtest",
         )
     except Exception as e:
-        print(f"Could not generate tearsheet: {e}")
+        logger.error("Could not generate tearsheet: %s", e)
 
     result = engine.get_result()
     positions_report = engine.generate_positions_report()
-    print("=== Multi-Instrument Backtest Completed ===")
-    print(f"Total orders: {result.total_orders}")
-    print(f"Total positions: {result.total_positions}")
-    print(f"Positions report:\n{positions_report}")
-    print(f"PnL: {result.stats_pnls}")
+    logger.info("=== Multi-Instrument Backtest Completed ===")
+    logger.info("Total orders: %s", result.total_orders)
+    logger.info("Total positions: %s", result.total_positions)
+    logger.info("Positions report:\n%s", positions_report)
+    logger.info("PnL: %s", result.stats_pnls)
+
