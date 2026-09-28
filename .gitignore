@@ -11,3 +11,4 @@ wheels/
 *.csv
 /data
 *.html
+*.pdf

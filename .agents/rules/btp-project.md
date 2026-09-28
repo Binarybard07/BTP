@@ -21,8 +21,7 @@
 ---
 
 ## 📊 AFTER IMPLEMENTATION
-1. **Run Test Suite**: Run `uv run pytest -v` to ensure zero regressions.
 2. **Update Implementation Log**: Log modified files, added functionality, and test results in `docs/implementation_log.md`.
 3. **Update Project State**: Update `docs/project_state.md` snapshot.
 4. **Update TODO List**: Mark completed items in `docs/todo.md`.
-5. **Record Decisions & Experiments**: Log architectural changes in `docs/decisions.md` and backtest runs in `docs/experiments.md`.
+5. **Record Decisions & Experiments**: Log architectural changes in `docs/decisions.md`.
