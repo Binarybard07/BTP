@@ -2,6 +2,10 @@
 V1 Indian Equity Quantitative Trading Research & Backtesting System
 """
 from equity_strategy.logging_config import configure_logging
+from equity_strategy.rebalancing import (
+    BaseRebalanceStrategy,
+    MonthlyRebalanceStrategy,
+)
 
 __version__ = "0.1.0"
 
@@ -9,7 +13,8 @@ __version__ = "0.1.0"
 configure_logging()
 
 __all__ = [
+    "BaseRebalanceStrategy",
+    "MonthlyRebalanceStrategy",
     "configure_logging",
     "__version__",
 ]
-

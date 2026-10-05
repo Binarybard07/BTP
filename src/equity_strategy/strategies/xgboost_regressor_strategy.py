@@ -23,6 +23,8 @@ from equity_strategy.selection.base import BaseSelector
 from equity_strategy.selection.top_n import TopNSelector
 from equity_strategy.portfolio.base import BasePortfolio
 from equity_strategy.portfolio.equal_weight import EqualWeightPortfolio
+from equity_strategy.rebalancing.base import BaseRebalanceStrategy
+from equity_strategy.rebalancing.monthly import MonthlyRebalanceStrategy
 
 
 @dataclass
@@ -57,7 +59,7 @@ class StrategyResult:
         lines.append("\n1. REBALANCE OVERVIEW")
         lines.append(sub_sep)
         total_rebalances = len(self.rebalance_dates)
-        lines.append(f"Total Rebalance Events: {total_rebalances}")
+        lines.append(f"Total Rebalance Dates:  {total_rebalances}")
         if total_rebalances > 0:
             first_reb = self.rebalance_dates[0].strftime("%Y-%m-%d")
             last_reb = self.rebalance_dates[-1].strftime("%Y-%m-%d")
@@ -258,6 +260,7 @@ class XGBoostRegressorConfig:
     feature_engine: Optional[FeatureEngine] = None
     target_engine: Optional[TargetEngine] = None
     dataset_builder: Optional[TrainingDatasetBuilder] = None
+    rebalance_strategy: Optional[BaseRebalanceStrategy] = None
     rebalance_frequency: str = "monthly"
     min_train_days: int = 252  # Minimum historical trading days required before first rebalance
 
@@ -322,6 +325,9 @@ class XGBoostRegressorStrategy:
         self.portfolio: BasePortfolio = (
             self.config.portfolio or EqualWeightPortfolio()
         )
+        self.rebalance_strategy: BaseRebalanceStrategy = (
+            self.config.rebalance_strategy or MonthlyRebalanceStrategy()
+        )
 
     def _get_fresh_model(self) -> BaseModel:
         """Instantiates a fresh model instance to avoid carryover state between folds."""
@@ -330,39 +336,6 @@ class XGBoostRegressorStrategy:
         ):
             return type(self.model_prototype)(**self.model_prototype.params)
         return copy.deepcopy(self.model_prototype)
-
-    @staticmethod
-    def get_monthly_rebalance_dates(
-        dates: pd.Series,
-        mode: str = "last_day",
-    ) -> List[pd.Timestamp]:
-        """
-        Identifies monthly rebalance dates from trading calendar dates.
-
-        Parameters:
-            dates: Series of trading dates.
-            mode: 'last_day' (last available trading session of each month) or 'first_day'.
-
-        Returns:
-            List[pd.Timestamp]: Chronologically sorted list of rebalance dates.
-        """
-        unique_dates = (
-            pd.Series(pd.to_datetime(dates).unique())
-            .sort_values()
-            .reset_index(drop=True)
-        )
-        if unique_dates.empty:
-            return []
-
-        df_dates = pd.DataFrame({"Date": unique_dates})
-        df_dates["YearMonth"] = df_dates["Date"].dt.to_period("M")
-
-        if mode == "first_day":
-            indices = df_dates.groupby("YearMonth")["Date"].idxmin().tolist()
-        else:
-            indices = df_dates.groupby("YearMonth")["Date"].idxmax().tolist()
-
-        return unique_dates.iloc[sorted(indices)].tolist()
 
     def execute(
         self,
@@ -407,13 +380,13 @@ class XGBoostRegressorStrategy:
         training_df = self.dataset_builder.build(targeted_df)
         training_df["Date"] = pd.to_datetime(training_df["Date"])
 
-        # Step 5: Identify calendar trading days and monthly rebalance dates
+        # Step 5: Causally generate monthly rebalance dates
         all_trading_dates = (
             pd.Series(featured_df["Date"].unique())
             .sort_values()
             .reset_index(drop=True)
         )
-        rebalance_dates = self.get_monthly_rebalance_dates(all_trading_dates, mode="last_day")
+        rebalance_dates = self.rebalance_strategy.generate_rebalance_dates(all_trading_dates)
         date_to_index = {d: i for i, d in enumerate(all_trading_dates)}
 
         # Output containers
@@ -435,7 +408,7 @@ class XGBoostRegressorStrategy:
             cutoff_idx = max(0, date_idx - self.target_horizon)
             train_cutoff_date = all_trading_dates.iloc[cutoff_idx]
 
-            # Expanding training window
+            # Expanding training window using data strictly through train_cutoff_date
             train_subset = training_df[training_df["Date"] <= train_cutoff_date]
             if train_subset.empty:
                 continue
@@ -447,7 +420,7 @@ class XGBoostRegressorStrategy:
             model = self._get_fresh_model()
             model.train(X_train, y_train)
 
-            # Extract features for all active stocks on the rebalance date
+            # Extract features for all active stocks on the rebalance decision date
             current_bar_data = featured_df[featured_df["Date"] == reb_date].copy()
             valid_current = current_bar_data.dropna(subset=self.feature_columns)
             if valid_current.empty:
