@@ -8,6 +8,10 @@ from equity_strategy.strategies.xgboost_regressor_strategy import (
     XGBoostRegressorStrategy,
     XGBoostStrategyConfig,
 )
+from equity_strategy.strategies.xgboost_nautilus_strategy import (
+    XGBoostNautilusConfig,
+    XGBoostNautilusStrategy,
+)
 
 __all__ = [
     "MACrossoverConfig",
@@ -16,5 +20,7 @@ __all__ = [
     "XGBoostRegressorConfig",
     "XGBoostRegressorStrategy",
     "XGBoostStrategyConfig",
+    "XGBoostNautilusConfig",
+    "XGBoostNautilusStrategy",
 ]
 
