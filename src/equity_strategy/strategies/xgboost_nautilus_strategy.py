@@ -613,7 +613,7 @@ if __name__ == "__main__":
 
     configure_logging()
     data_source = "NIFTY500"
-    logger.info("Starting XGBoost Nautilus Strategy Backtest...")
+    logger.info("Starting XGBoost Regressor Strategy Backtest...")
     engine = XGBoostRegressorStrategy.run(
         data_source=f"data/raw/{data_source}",
         starting_balance=10_000_000.0,
@@ -626,9 +626,9 @@ if __name__ == "__main__":
         create_tearsheet(
             engine=engine,
             output_path=f"xgboost_backtest_results_{unique_id}.html",
-            title="XGBoost ML Strategy Backtest",
+            title="XGBoost Regressor Strategy Backtest",
         )
     except Exception as e:
         logger.error("Could not generate tearsheet: %s", e)
     
-    logger.info("=== Multi-Instrument XGBoost ML Backtest Completed ===")
+    logger.info("=== Multi-Instrument XGBoost Regressor Backtest Completed ===")
