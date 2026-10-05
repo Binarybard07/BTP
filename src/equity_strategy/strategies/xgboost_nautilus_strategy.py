@@ -45,9 +45,9 @@ from equity_strategy.targets.engine import TargetEngine
 logger = logging.getLogger(__name__)
 
 
-class XGBoostNautilusConfig(StrategyConfig):
+class XGBoostRegressorConfig(StrategyConfig):
     """
-    Configuration for the event-driven XGBoostNautilusStrategy.
+    Configuration for the event-driven XGBoostRegressorStrategy.
 
     Parameters:
         bar_types: List of Nautilus BarType subscriptions for the active universe.
@@ -110,7 +110,7 @@ class XGBoostNautilusConfig(StrategyConfig):
         self.currency = currency
 
 
-class XGBoostNautilusStrategy(Strategy):
+class XGBoostRegressorStrategy(Strategy):
     """
     Concrete Multi-Instrument XGBoost ML Strategy running on NautilusTrader.
 
@@ -132,7 +132,7 @@ class XGBoostNautilusStrategy(Strategy):
         Nautilus Market Orders
     """
 
-    def __init__(self, config: XGBoostNautilusConfig):
+    def __init__(self, config: XGBoostRegressorConfig):
         super().__init__(config=config)
         self.bar_types: List[BarType] = config.bar_types
         self.featured_df: pd.DataFrame = (
@@ -191,7 +191,7 @@ class XGBoostNautilusStrategy(Strategy):
         - Initializes and attaches the Rebalancer to this Nautilus strategy state.
         """
         logger.info(
-            "Starting XGBoostNautilusStrategy with %d instruments...", len(self.bar_types)
+            "Starting XGBoostRegressorStrategy with %d instruments...", len(self.bar_types)
         )
         for bar_type in self.bar_types:
             self.subscribe_bars(bar_type)
@@ -215,7 +215,7 @@ class XGBoostNautilusStrategy(Strategy):
             if self.rebalancer.base_currency is None:
                 self.rebalancer.base_currency = Currency.from_str(self.currency)
 
-        logger.info("XGBoostNautilusStrategy started and Rebalancer attached.")
+        logger.info("XGBoostRegressorStrategy started and Rebalancer attached.")
 
     def _extract_date(self, item: Any) -> pd.Timestamp:
         """Normalizes Nautilus Bar timestamp to calendar session Timestamp."""
@@ -444,7 +444,7 @@ class XGBoostNautilusStrategy(Strategy):
         starting_balance: float = 10_000_000.0,
         pipeline: Optional[StrategyDataPipeline] = None,
         engine_config: Optional[BacktestEngineConfig] = None,
-        config: Optional[XGBoostNautilusConfig] = None,
+        config: Optional[XGBoostRegressorConfig] = None,
         feature_columns: Optional[List[str]] = None,
         target_horizon: int = 10,
         target_column: str = TARGET_COLUMN,
@@ -453,7 +453,7 @@ class XGBoostNautilusStrategy(Strategy):
         **kwargs: Any,
     ) -> BacktestEngine:
         """
-        Executes a real multi-instrument NautilusTrader backtest for XGBoostNautilusStrategy.
+        Executes a real multi-instrument NautilusTrader backtest for XGBoostRegressorStrategy.
 
         Flow:
             Directory of CSVs (or single CSV / DataFrame)
@@ -463,7 +463,7 @@ class XGBoostNautilusStrategy(Strategy):
               -> Add all Bar streams to BacktestEngine
               -> Construct pooled training and feature datasets across valid universe
               -> Sort all bars chronologically
-              -> Create ONE XGBoostNautilusStrategy managing the entire universe
+              -> Create ONE XGBoostRegressorStrategy managing the entire universe
               -> Run ONE shared cash account / portfolio
               -> Return completed BacktestEngine
         """
@@ -587,7 +587,7 @@ class XGBoostNautilusStrategy(Strategy):
 
         engine.sort_data()
 
-        strat_config = config or XGBoostNautilusConfig(
+        strat_config = config or XGBoostRegressorConfig(
             bar_types=bar_types,
             featured_df=combined_featured_df,
             training_df=training_df,
@@ -614,7 +614,7 @@ if __name__ == "__main__":
     configure_logging()
     data_source = "NIFTY500"
     logger.info("Starting XGBoost Nautilus Strategy Backtest...")
-    engine = XGBoostNautilusStrategy.run(
+    engine = XGBoostRegressorStrategy.run(
         data_source=f"data/raw/{data_source}",
         starting_balance=10_000_000.0,
         top_n=20,
