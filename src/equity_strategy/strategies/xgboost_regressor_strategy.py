@@ -623,10 +623,12 @@ if __name__ == "__main__":
 
     try:
         unique_id = data_source + "_" + pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = pathlib.Path("strategy_results")
+        output_dir.mkdir(parents=True, exist_ok=True)
         create_tearsheet(
             engine=engine,
-            output_path=f"xgboost_backtest_results_{unique_id}.html",
-            title="XGBoost Regressor Strategy Backtest",
+            output_path=f"{output_dir}/{XGBoostRegressorStrategy.__name__}_{unique_id}.html",
+            title=f"{XGBoostRegressorStrategy.__name__} Backtest - {unique_id}",
         )
     except Exception as e:
         logger.error("Could not generate tearsheet: %s", e)
