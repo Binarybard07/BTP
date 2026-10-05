@@ -25,6 +25,7 @@ from equity_strategy.portfolio.base import BasePortfolio
 from equity_strategy.portfolio.equal_weight import EqualWeightPortfolio
 from equity_strategy.rebalancing.base import BaseRebalanceStrategy
 from equity_strategy.rebalancing.monthly import MonthlyRebalanceStrategy
+from equity_strategy.rebalancing.rebalancer import Rebalancer
 
 
 @dataclass
@@ -261,6 +262,7 @@ class XGBoostRegressorConfig:
     target_engine: Optional[TargetEngine] = None
     dataset_builder: Optional[TrainingDatasetBuilder] = None
     rebalance_strategy: Optional[BaseRebalanceStrategy] = None
+    rebalancer: Optional[Rebalancer] = None
     rebalance_frequency: str = "monthly"
     min_train_days: int = 252  # Minimum historical trading days required before first rebalance
 
@@ -328,6 +330,7 @@ class XGBoostRegressorStrategy:
         self.rebalance_strategy: BaseRebalanceStrategy = (
             self.config.rebalance_strategy or MonthlyRebalanceStrategy()
         )
+        self.rebalancer: Optional[Rebalancer] = self.config.rebalancer
 
     def _get_fresh_model(self) -> BaseModel:
         """Instantiates a fresh model instance to avoid carryover state between folds."""
