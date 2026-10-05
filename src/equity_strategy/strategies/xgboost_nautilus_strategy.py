@@ -615,7 +615,7 @@ if __name__ == "__main__":
     data_source = "NIFTY500"
     logger.info("Starting XGBoost Nautilus Strategy Backtest...")
     engine = XGBoostNautilusStrategy.run(
-        data_source="data/raw/{data_source}",
+        data_source=f"data/raw/{data_source}",
         starting_balance=10_000_000.0,
         top_n=20,
         min_train_days=252*5,
