@@ -24,8 +24,17 @@ from nautilus_trader.model import (
     QuoteTick,
     Venue,
 )
+from nautilus_trader.execution import FeeModel, FillModel
 from nautilus_trader.trading import Strategy, StrategyConfig
 
+from equity_strategy.execution import (
+    AdverseSlippageConfig,
+    AdverseSlippageFillModel,
+    DPChargesConfig,
+    ExecutionCostReport,
+    IndianEquityDeliveryFeeModel,
+    OrdinaryChargesConfig,
+)
 from equity_strategy.data.loader import CSVDataLoader
 from equity_strategy.data.nautilus_data import NautilusDataConverter
 from equity_strategy.data.strategy_data import StrategyDataPipeline
@@ -97,6 +106,12 @@ class XGBoostRegressorConfig(StrategyConfig):
         rebalancer: Optional[Rebalancer] = None,
         venue: str = "NSE",
         currency: str = "INR",
+        fee_model: Optional[FeeModel] = None,
+        fill_model: Optional[FillModel] = None,
+        ordinary_charges_config: Optional[OrdinaryChargesConfig] = None,
+        dp_charges_config: Optional[DPChargesConfig] = None,
+        slippage_pct: float = 0.0005,
+        enable_slippage: bool = True,
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
@@ -118,6 +133,12 @@ class XGBoostRegressorConfig(StrategyConfig):
         self.rebalancer = rebalancer
         self.venue = venue
         self.currency = currency
+        self.fee_model = fee_model
+        self.fill_model = fill_model
+        self.ordinary_charges_config = ordinary_charges_config
+        self.dp_charges_config = dp_charges_config
+        self.slippage_pct = slippage_pct
+        self.enable_slippage = enable_slippage
 
 
 class XGBoostRegressorStrategy(Strategy):
@@ -167,6 +188,8 @@ class XGBoostRegressorStrategy(Strategy):
         self.rebalancer: Optional[Rebalancer] = config.rebalancer
         self.venue: str = config.venue
         self.currency: str = config.currency
+        self.fee_model: Optional[FeeModel] = config.fee_model
+        self.fill_model: Optional[FillModel] = config.fill_model
 
         # Date to index lookup for chronological lookups
         self.date_to_index: Dict[pd.Timestamp, int] = {
@@ -379,6 +402,13 @@ class XGBoostRegressorStrategy(Strategy):
                 event.ts_event,
             )
 
+    def get_cost_report(self) -> ExecutionCostReport:
+        """Returns the consolidated ExecutionCostReport for this strategy."""
+        return ExecutionCostReport(
+            fee_model=self.fee_model if isinstance(self.fee_model, IndianEquityDeliveryFeeModel) else None,
+            fill_model=self.fill_model if isinstance(self.fill_model, AdverseSlippageFillModel) else None,
+        )
+
     def on_stop(self) -> None:
         """Nautilus lifecycle callback when engine stops."""
         if self._queued_orders:
@@ -387,6 +417,9 @@ class XGBoostRegressorStrategy(Strategy):
                 len(self._queued_orders),
                 self._queued_execution_session.strftime("%Y-%m-%d") if self._queued_execution_session else "N/A",
             )
+        if self.fee_model is not None or self.fill_model is not None:
+            cost_report = self.get_cost_report()
+            logger.info("\n%s", cost_report.to_text())
 
     def _get_fresh_model(self) -> BaseModel:
         """Instantiates a fresh model instance to avoid carryover state between folds."""
@@ -565,6 +598,12 @@ class XGBoostRegressorStrategy(Strategy):
         target_column: str = TARGET_COLUMN,
         min_train_days: int = 252,
         top_n: int = 20,
+        fee_model: Optional[FeeModel] = None,
+        fill_model: Optional[FillModel] = None,
+        ordinary_charges_config: Optional[OrdinaryChargesConfig] = None,
+        dp_charges_config: Optional[DPChargesConfig] = None,
+        slippage_pct: float = 0.0005,
+        enable_slippage: bool = True,
         **kwargs: Any,
     ) -> BacktestEngine:
         """
@@ -612,11 +651,29 @@ class XGBoostRegressorStrategy(Strategy):
         cfg = engine_config or BacktestEngineConfig()
         engine = BacktestEngine(config=cfg)
 
+        active_fee_model = fee_model
+        if active_fee_model is None:
+            active_fee_model = IndianEquityDeliveryFeeModel(
+                ordinary_config=ordinary_charges_config,
+                dp_config=dp_charges_config,
+            )
+
+        active_fill_model = fill_model
+        if active_fill_model is None:
+            active_fill_model = AdverseSlippageFillModel(
+                config=AdverseSlippageConfig(
+                    slippage_pct=slippage_pct,
+                    enabled=enable_slippage,
+                )
+            )
+
         engine.add_venue(
             venue=Venue(venue),
             oms_type=OmsType.NETTING,
             account_type=AccountType.CASH,
             starting_balances=[Money(starting_balance, Currency.from_str(currency))],
+            fee_model=active_fee_model,
+            fill_model=active_fill_model,
         )
 
         bar_types: List[BarType] = []
@@ -717,6 +774,12 @@ class XGBoostRegressorStrategy(Strategy):
             top_n=top_n,
             venue=venue,
             currency=currency,
+            fee_model=active_fee_model,
+            fill_model=active_fill_model,
+            ordinary_charges_config=ordinary_charges_config,
+            dp_charges_config=dp_charges_config,
+            slippage_pct=slippage_pct,
+            enable_slippage=enable_slippage,
             **kwargs,
         )
         strategy = cls(config=strat_config)
