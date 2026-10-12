@@ -7,6 +7,7 @@ from equity_strategy.execution.charges import (
 )
 from equity_strategy.execution.cost_reports import ExecutionCostReport
 from equity_strategy.execution.fee_model import IndianEquityDeliveryFeeModel
+from equity_strategy.execution.recorder import ExecutionEventRecorder
 from equity_strategy.execution.slippage import AdverseSlippageConfig, AdverseSlippageFillModel
 
 __all__ = [
@@ -19,4 +20,5 @@ __all__ = [
     "AdverseSlippageConfig",
     "AdverseSlippageFillModel",
     "ExecutionCostReport",
+    "ExecutionEventRecorder",
 ]

@@ -88,6 +88,7 @@ class ExecutionCostReport:
             "slippage": {
                 "slippage_rate_pct": slippage_pct,
                 "total_slippage_cost": slippage_cost,
+                "slipped_fill_count": self.fill_model.fill_count if self.fill_model else 0,
             },
             "summary": {
                 "total_commission_deducted": total_commission,
@@ -132,8 +133,9 @@ class ExecutionCostReport:
             "NAUTILUS COMMISSION TOTAL (Debited authoritatively from Cash Balance):",
             f"  Total Commission:          ₹{sm['total_commission_deducted']:>15,.2f}",
             "--------------------------------------------------------------------------------",
-            "EXECUTION SLIPPAGE (Adverse Tick Increments):",
+            "EXECUTION SLIPPAGE (Adverse Tick Increments from Actual Fills):",
             f"  - Configured Slippage:     {s['slippage_rate_pct'] * 100:>14.3f}% per side",
+            f"  - Actual Slipped Fills:    {s['slipped_fill_count']:>16}",
             f"  Total Slipped Price Drag:  ₹{s['total_slippage_cost']:>15,.2f}",
             "================================================================================",
             "COMBINED TOTAL EXECUTION DRAG:",

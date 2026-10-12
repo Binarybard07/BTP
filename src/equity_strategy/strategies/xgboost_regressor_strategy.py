@@ -2,6 +2,10 @@ import copy
 import logging
 import pathlib
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from nautilus_trader.common import LogLevel
+from nautilus_trader.config import FileWriterConfig
+from nautilus_trader.config import LoggerConfig
+from nautilus_trader.model import TraderId
 import pandas as pd
 from equity_strategy.logging_config import configure_logging
 
@@ -32,6 +36,7 @@ from equity_strategy.execution import (
     AdverseSlippageFillModel,
     DPChargesConfig,
     ExecutionCostReport,
+    ExecutionEventRecorder,
     IndianEquityDeliveryFeeModel,
     OrdinaryChargesConfig,
 )
@@ -58,6 +63,7 @@ from equity_strategy.rebalancing.rebalancer import (
 from equity_strategy.selection.base import BaseSelector
 from equity_strategy.selection.top_n import TopNSelector
 from equity_strategy.selection.percentile import PercentileSelector
+from equity_strategy.targets import engine
 from equity_strategy.targets.engine import TargetEngine
 
 logger = logging.getLogger(__name__)
@@ -108,6 +114,7 @@ class XGBoostRegressorConfig(StrategyConfig):
         currency: str = "INR",
         fee_model: Optional[FeeModel] = None,
         fill_model: Optional[FillModel] = None,
+        recorder: Optional[ExecutionEventRecorder] = None,
         ordinary_charges_config: Optional[OrdinaryChargesConfig] = None,
         dp_charges_config: Optional[DPChargesConfig] = None,
         slippage_pct: float = 0.0005,
@@ -135,6 +142,7 @@ class XGBoostRegressorConfig(StrategyConfig):
         self.currency = currency
         self.fee_model = fee_model
         self.fill_model = fill_model
+        self.recorder = recorder
         self.ordinary_charges_config = ordinary_charges_config
         self.dp_charges_config = dp_charges_config
         self.slippage_pct = slippage_pct
@@ -190,6 +198,11 @@ class XGBoostRegressorStrategy(Strategy):
         self.currency: str = config.currency
         self.fee_model: Optional[FeeModel] = config.fee_model
         self.fill_model: Optional[FillModel] = config.fill_model
+        self.recorder: Optional[ExecutionEventRecorder] = (
+            config.recorder
+            or getattr(config.fee_model, "recorder", None)
+            or getattr(config.fill_model, "recorder", None)
+        )
 
         # Date to index lookup for chronological lookups
         self.date_to_index: Dict[pd.Timestamp, int] = {
@@ -255,6 +268,17 @@ class XGBoostRegressorStrategy(Strategy):
                 self.rebalancer.default_venue = Venue(self.venue)
             if self.rebalancer.base_currency is None:
                 self.rebalancer.base_currency = Currency.from_str(self.currency)
+
+        # Attach engine clock and shared recorder to execution cost models
+        if self.fee_model and hasattr(self.fee_model, "set_clock"):
+            self.fee_model.set_clock(self.clock)
+        if self.fill_model and hasattr(self.fill_model, "set_clock"):
+            self.fill_model.set_clock(self.clock)
+        if self.recorder is not None:
+            if self.fee_model and hasattr(self.fee_model, "set_recorder"):
+                self.fee_model.set_recorder(self.recorder)
+            if self.fill_model and hasattr(self.fill_model, "set_recorder"):
+                self.fill_model.set_recorder(self.recorder)
 
         logger.info("XGBoostRegressorStrategy started: Subscribed to bars and opening quotes.")
 
@@ -352,6 +376,26 @@ class XGBoostRegressorStrategy(Strategy):
                 "execution_session": quote_date,
             }
 
+            # Register execution session and reference price before submitting to matching engine
+            cid = instr.order.client_order_id
+            if self.recorder is not None:
+                self.recorder.register_order_release(
+                    client_order_id=cid,
+                    timestamp_ns=quote.ts_event,
+                    intended_price=intended_px,
+                )
+            if self.fee_model and hasattr(self.fee_model, "register_execution_session"):
+                self.fee_model.register_execution_session(
+                    client_order_id=cid,
+                    timestamp_ns=quote.ts_event,
+                    session_date=quote_date,
+                )
+            if self.fill_model and hasattr(self.fill_model, "register_reference_price"):
+                self.fill_model.register_reference_price(
+                    client_order_id=cid,
+                    reference_price=intended_px,
+                )
+
             logger.info(
                 "RELEASING QUEUED ORDER on opening quote: %s | quote_px=%.2f | quote_ts=%s | side=%s | qty=%s",
                 quote.instrument_id,
@@ -370,7 +414,16 @@ class XGBoostRegressorStrategy(Strategy):
         """
         Nautilus lifecycle callback when an order fill event is received.
         Distinguishes intended T+1 opening execution from actual fill details.
+        Authoritatively records slippage attribution and links fill trade IDs.
         """
+        # Record actual execution fill in FillModel for slippage attribution
+        if self.fill_model and hasattr(self.fill_model, "record_fill"):
+            self.fill_model.record_fill(event)
+
+        # Notify FeeModel of authoritative fill details
+        if self.fee_model and hasattr(self.fee_model, "on_order_filled"):
+            self.fee_model.on_order_filled(event)
+
         meta = self._order_execution_metadata.get(event.client_order_id)
         fill_px = float(event.last_px.as_double())
         fill_qty = float(event.last_qty.as_double())
@@ -379,9 +432,10 @@ class XGBoostRegressorStrategy(Strategy):
             intended_px = meta["intended_px"]
             diff = fill_px - intended_px
             logger.info(
-                "ORDER FILLED: %s | client_order_id=%s | side=%s | qty=%.2f | fill_px=%.2f (intended_open_px=%.2f, diff=%.4f) | fill_ts=%s | decision_date=%s | execution_session=%s",
+                "ORDER FILLED: %s | client_order_id=%s | trade_id=%s | side=%s | qty=%.2f | fill_px=%.2f (intended_open_px=%.2f, diff=%.4f) | fill_ts=%s | decision_date=%s | execution_session=%s",
                 event.instrument_id,
                 event.client_order_id,
+                event.trade_id,
                 event.order_side.name,
                 fill_qty,
                 fill_px,
@@ -393,9 +447,10 @@ class XGBoostRegressorStrategy(Strategy):
             )
         else:
             logger.info(
-                "ORDER FILLED: %s | client_order_id=%s | side=%s | qty=%.2f | fill_px=%.2f | fill_ts=%s",
+                "ORDER FILLED: %s | client_order_id=%s | trade_id=%s | side=%s | qty=%.2f | fill_px=%.2f | fill_ts=%s",
                 event.instrument_id,
                 event.client_order_id,
+                event.trade_id,
                 event.order_side.name,
                 fill_qty,
                 fill_px,
@@ -604,6 +659,9 @@ class XGBoostRegressorStrategy(Strategy):
         dp_charges_config: Optional[DPChargesConfig] = None,
         slippage_pct: float = 0.0005,
         enable_slippage: bool = True,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        unique_id: str = "001",
         **kwargs: Any,
     ) -> BacktestEngine:
         """
@@ -648,15 +706,30 @@ class XGBoostRegressorStrategy(Strategy):
 
         pipe = pipeline or StrategyDataPipeline()
 
-        cfg = engine_config or BacktestEngineConfig()
+        pathlib.Path("strategy_results/logs").mkdir(parents=True,exist_ok=True)
+        cfg = engine_config or BacktestEngineConfig(trader_id=TraderId.from_str("TESTER-001"),
+            logging=LoggerConfig(
+            stdout_level=LogLevel.OFF,
+            fileout_level=LogLevel.INFO,
+            component_levels={"Portfolio": "INFO"},
+            file_config=FileWriterConfig(
+                directory="strategy_results/logs",
+                file_name=f"nautilus_{XGBoostRegressorStrategy.__name__}_{unique_id}.log"))
+        )
         engine = BacktestEngine(config=cfg)
+
+        # Instantiate ExecutionEventRecorder to coordinate fill timestamps and reference prices
+        recorder = ExecutionEventRecorder(exchange_tz="Asia/Kolkata")
 
         active_fee_model = fee_model
         if active_fee_model is None:
             active_fee_model = IndianEquityDeliveryFeeModel(
                 ordinary_config=ordinary_charges_config,
                 dp_config=dp_charges_config,
+                recorder=recorder,
             )
+        elif hasattr(active_fee_model, "set_recorder") and getattr(active_fee_model, "recorder", None) is None:
+            active_fee_model.set_recorder(recorder)
 
         active_fill_model = fill_model
         if active_fill_model is None:
@@ -664,8 +737,11 @@ class XGBoostRegressorStrategy(Strategy):
                 config=AdverseSlippageConfig(
                     slippage_pct=slippage_pct,
                     enabled=enable_slippage,
-                )
+                ),
+                recorder=recorder,
             )
+        elif hasattr(active_fill_model, "set_recorder") and getattr(active_fill_model, "recorder", None) is None:
+            active_fill_model.set_recorder(recorder)
 
         engine.add_venue(
             venue=Venue(venue),
@@ -776,6 +852,7 @@ class XGBoostRegressorStrategy(Strategy):
             currency=currency,
             fee_model=active_fee_model,
             fill_model=active_fill_model,
+            recorder=recorder,
             ordinary_charges_config=ordinary_charges_config,
             dp_charges_config=dp_charges_config,
             slippage_pct=slippage_pct,
@@ -785,6 +862,30 @@ class XGBoostRegressorStrategy(Strategy):
         strategy = cls(config=strat_config)
         engine.add_strategy(strategy)
 
+        start_ts = None
+        end_ts = None
+
+        if start_date is not None:
+            start_ts = (
+                pd.Timestamp(start_date)
+                .tz_localize("Asia/Kolkata")
+                .tz_convert("UTC")
+                .value
+            )
+
+        if end_date is not None:
+            end_ts = (
+                pd.Timestamp(end_date)
+                .normalize()
+                .tz_localize("Asia/Kolkata")
+                + pd.Timedelta(days=1)
+                - pd.Timedelta(nanoseconds=1)
+            ).tz_convert("UTC").value
+
+        if start_ts is not None and end_ts is not None and start_ts >= end_ts:
+            raise ValueError("start_date must be before end_date")
+
+    
         engine.run()
         return engine
 
@@ -792,17 +893,20 @@ class XGBoostRegressorStrategy(Strategy):
 if __name__ == "__main__":
 
     configure_logging()
-    data_source = "NIFTY200"
+    data_source = "NIFTY50"
     logger.info("Starting XGBoost Regressor Strategy Backtest...")
+    unique_id = data_source + "_" + pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+
     engine = XGBoostRegressorStrategy.run(
         data_source=f"data/raw/{data_source}",
         starting_balance=10_000_00.0,
         top_n=20,
         min_train_days=252*5,
+        unique_id=unique_id,
+        start_date = "2015-01-01"
     )
 
     try:
-        unique_id = data_source + "_" + pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
         output_dir = pathlib.Path("strategy_results")
         output_dir.mkdir(parents=True, exist_ok=True)
         create_tearsheet(

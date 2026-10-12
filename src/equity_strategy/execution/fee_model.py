@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from nautilus_trader.execution import FeeModel
-from nautilus_trader.model import Currency, Money, OrderSide, Price, Quantity
+from nautilus_trader.model import Currency, Money, OrderFilled, OrderSide, Price, Quantity
 
 from equity_strategy.execution.charges import (
     DPChargesConfig,
@@ -12,6 +12,7 @@ from equity_strategy.execution.charges import (
     OrdinaryChargesCalculator,
     OrdinaryChargesConfig,
 )
+from equity_strategy.execution.recorder import ExecutionEventRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,8 @@ class IndianEquityDeliveryFeeModel(FeeModel):
        - Incurred strictly on delivery sells (never on buys)
        - Charged at most once per qualifying ISIN per trading day regardless of order or fill count.
        - Handled natively via Nautilus fee accounting without duplicate cash ledgers.
+       - Evaluated strictly using the actual execution timestamp (converted to exchange timezone),
+         never falling back silently to order creation time (order.ts_init).
     """
 
     def __new__(cls, *args: Any, **kwargs: Any) -> "IndianEquityDeliveryFeeModel":
@@ -42,20 +45,97 @@ class IndianEquityDeliveryFeeModel(FeeModel):
         self,
         ordinary_config: Optional[OrdinaryChargesConfig] = None,
         dp_config: Optional[DPChargesConfig] = None,
+        recorder: Optional[ExecutionEventRecorder] = None,
+        exchange_tz: str = "Asia/Kolkata",
     ) -> None:
         super().__init__()
         self.ordinary_config = ordinary_config or OrdinaryChargesConfig()
         self.dp_config = dp_config or DPChargesConfig()
+        self.recorder = recorder
+        self.exchange_tz = exchange_tz
+        self.clock: Optional[Any] = None
 
         self.ordinary_calculator = OrdinaryChargesCalculator(self.ordinary_config)
         self.dp_tracker = DPChargesTracker(self.dp_config)
 
         self._fill_records: List[Dict[str, Any]] = []
+        self._execution_timestamps: Dict[str, int] = {}
+
+    def set_recorder(self, recorder: ExecutionEventRecorder) -> None:
+        """Attaches an ExecutionEventRecorder to coordinate execution timestamps."""
+        self.recorder = recorder
+
+    def set_clock(self, clock: Any) -> None:
+        """Attaches the NautilusTrader simulation clock."""
+        self.clock = clock
+
+    def register_execution_session(
+        self,
+        client_order_id: Any,
+        timestamp_ns: int,
+        session_date: Optional[datetime.date] = None,
+    ) -> None:
+        """
+        Explicitly registers the actual execution session timestamp for an order.
+        Called when a queued order is released upon opening QuoteTick arrival.
+        """
+        cid = str(client_order_id)
+        self._execution_timestamps[cid] = timestamp_ns
+        if self.recorder is not None:
+            self.recorder.register_order_release(cid, timestamp_ns)
 
     def reset(self) -> None:
         """Clears all audit tracking and DP daily frequency history."""
         self._fill_records.clear()
+        self._execution_timestamps.clear()
         self.dp_tracker.reset()
+        if self.recorder is not None:
+            self.recorder.reset()
+
+    def get_execution_timestamp_ns(self, order: Any) -> int:
+        """
+        Determines the actual execution timestamp in nanoseconds for the order.
+        Strictly avoids silently falling back to order.ts_init.
+        """
+        cid = str(getattr(order, "client_order_id", order))
+
+        # 1. Registered via recorder
+        if self.recorder is not None:
+            try:
+                return self.recorder.get_execution_timestamp_ns(order)
+            except RuntimeError:
+                pass
+
+        # 2. Directly registered with this fee model
+        if cid in self._execution_timestamps:
+            return self._execution_timestamps[cid]
+
+        # 3. Nautilus simulation clock
+        if self.clock is not None:
+            ts_clock = self.clock.timestamp_ns()
+            if ts_clock > 0:
+                return ts_clock
+
+        # 4. Check order's lifecycle timestamps (accepted, submitted, last)
+        ts_init = getattr(order, "ts_init", 0) or 0
+        ts_accepted = getattr(order, "ts_accepted", None) or 0
+        if ts_accepted > 0 and ts_accepted != ts_init:
+            return ts_accepted
+
+        ts_submitted = getattr(order, "ts_submitted", None) or 0
+        if ts_submitted > 0 and ts_submitted != ts_init:
+            return ts_submitted
+
+        ts_last = getattr(order, "ts_last", 0) or 0
+        if ts_last > 0 and ts_last != ts_init:
+            return ts_last
+
+        # Refuse to silently fall back to order.ts_init
+        raise RuntimeError(
+            f"Cannot determine actual execution timestamp for order '{cid}'. "
+            f"Execution timestamp was not registered and order timestamp reflects creation time (ts_init={ts_init}). "
+            f"FeeModel requires an actual execution timestamp to accurately attribute DP charges."
+        )
 
     def get_commission(
         self,
@@ -88,16 +168,13 @@ class IndianEquityDeliveryFeeModel(FeeModel):
         else:
             is_buy = True
 
-        # Extract trading date in IST from order timestamp (ts_init or ts_event)
-        ts_ns = getattr(order, "ts_init", 0) or 0
-        if ts_ns > 0:
-            trading_date = (
-                pd.to_datetime(ts_ns, unit="ns", utc=True)
-                .tz_convert("Asia/Kolkata")
-                .date()
-            )
-        else:
-            trading_date = datetime.date.today()
+        # Extract actual execution timestamp and convert to configured exchange timezone
+        ts_ns = self.get_execution_timestamp_ns(order)
+        trading_date = (
+            pd.to_datetime(ts_ns, unit="ns", utc=True)
+            .tz_convert(self.exchange_tz)
+            .date()
+        )
 
         # Extract instrument symbol
         if hasattr(instrument.id, "symbol"):
@@ -112,7 +189,7 @@ class IndianEquityDeliveryFeeModel(FeeModel):
             is_buy=is_buy,
         )
 
-        # Calculate DP charge (only on first delivery sell of ISIN on this trading day)
+        # Calculate DP charge (only on first delivery sell of ISIN on this actual trading day)
         dp_charge = self.dp_tracker.evaluate_dp_charge(
             isin_symbol=symbol,
             trading_date=trading_date,
@@ -125,9 +202,11 @@ class IndianEquityDeliveryFeeModel(FeeModel):
         # Audit record for itemised reporting
         record = {
             "client_order_id": str(getattr(order, "client_order_id", "")),
+            "trade_id": None,  # Populated when OrderFilled event arrives
             "instrument_id": str(instrument.id),
             "symbol": symbol,
             "date": trading_date,
+            "ts_event": ts_ns,
             "side": "BUY" if is_buy else "SELL",
             "quantity": quantity,
             "price": price,
@@ -146,7 +225,7 @@ class IndianEquityDeliveryFeeModel(FeeModel):
         self._fill_records.append(record)
 
         logger.debug(
-            "COMMISSION CHARGED: %s %s qty=%.2f px=%.2f | Ord=₹%.2f (STT=%.2f, NSE=%.2f, Stamp=%.2f, GST=%.2f) + DP=₹%.2f => Total=₹%.2f",
+            "COMMISSION CHARGED: %s %s qty=%.2f px=%.2f | Ord=₹%.2f (STT=%.2f, NSE=%.2f, Stamp=%.2f, GST=%.2f) + DP=₹%.2f => Total=₹%.2f (date=%s)",
             "BUY" if is_buy else "SELL",
             symbol,
             quantity,
@@ -158,10 +237,28 @@ class IndianEquityDeliveryFeeModel(FeeModel):
             ordinary.gst,
             dp_charge,
             total_commission,
+            trading_date,
         )
 
         currency = getattr(instrument, "quote_currency", None) or Currency.from_str("INR")
         return Money(total_commission, currency)
+
+    def on_order_filled(self, event: OrderFilled) -> None:
+        """
+        Nautilus lifecycle callback when an OrderFilled event is received.
+        Attaches the authoritative trade_id to the matching audit record.
+        """
+        cid = str(event.client_order_id)
+        trade_id = str(event.trade_id)
+        fill_qty = float(event.last_qty.as_double())
+        fill_px = float(event.last_px.as_double())
+
+        # Link to the most recent unlinked fill record for this client_order_id
+        for rec in reversed(self._fill_records):
+            if rec["client_order_id"] == cid and rec["trade_id"] is None:
+                rec["trade_id"] = trade_id
+                rec["ts_event"] = int(event.ts_event)
+                break
 
     def get_commission_with_context(
         self,
