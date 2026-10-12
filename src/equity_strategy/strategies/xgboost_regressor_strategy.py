@@ -11,13 +11,17 @@ from nautilus_trader.model import (
     AccountType,
     Bar,
     BarType,
+    ClientOrderId,
     Currency,
     Equity,
     InstrumentId,
     Money,
     OmsType,
+    OrderFilled,
+    OrderSide,
     Price,
     Quantity,
+    QuoteTick,
     Venue,
 )
 from nautilus_trader.trading import Strategy, StrategyConfig
@@ -37,9 +41,14 @@ from equity_strategy.portfolio.base import BasePortfolio
 from equity_strategy.portfolio.equal_weight import EqualWeightPortfolio
 from equity_strategy.rebalancing.base import BaseRebalanceStrategy
 from equity_strategy.rebalancing.monthly import MonthlyRebalanceStrategy
-from equity_strategy.rebalancing.rebalancer import Rebalancer
+from equity_strategy.rebalancing.rebalancer import (
+    PlannedOrderInstruction,
+    RebalancePlan,
+    Rebalancer,
+)
 from equity_strategy.selection.base import BaseSelector
 from equity_strategy.selection.top_n import TopNSelector
+from equity_strategy.selection.percentile import PercentileSelector
 from equity_strategy.targets.engine import TargetEngine
 
 logger = logging.getLogger(__name__)
@@ -101,8 +110,9 @@ class XGBoostRegressorConfig(StrategyConfig):
         self.target_column = target_column
         self.min_train_days = min_train_days
         self.top_n = top_n
+        self.percentile = 85.0
         self.model = model or XGBoostRegressor()
-        self.selector = selector or TopNSelector(n=top_n)
+        self.selector = selector or PercentileSelector(percentile=self.percentile)
         self.portfolio = portfolio or EqualWeightPortfolio()
         self.rebalance_strategy = rebalance_strategy or MonthlyRebalanceStrategy()
         self.rebalancer = rebalancer
@@ -171,10 +181,16 @@ class XGBoostRegressorStrategy(Strategy):
         # Market state tracking: latest close price per instrument
         self._latest_prices: Dict[InstrumentId, float] = {}
 
-        # Monthly rebalance pending state for multi-instrument collection
-        self._pending_decision_date: Optional[pd.Timestamp] = None
-        self._pending_session_date: Optional[pd.Timestamp] = None
-        self._collected_session_prices: Dict[InstrumentId, float] = {}
+        # Session tracking for multi-instrument bar collection
+        self._session_reported_bars: Dict[pd.Timestamp, Set[InstrumentId]] = {}
+
+        # Rebalance planning & T+1 opening execution state
+        self._queued_plan: Optional[RebalancePlan] = None
+        self._queued_orders: Dict[InstrumentId, PlannedOrderInstruction] = {}
+        self._queued_execution_session: Optional[pd.Timestamp] = None
+        self._rebalance_plans_by_decision_date: Set[pd.Timestamp] = set()
+        self._released_orders_by_date: Dict[pd.Timestamp, List[Any]] = {}
+        self._order_execution_metadata: Dict[ClientOrderId, Dict[str, Any]] = {}
 
         # Strategy telemetry and research history
         self.rebalance_dates: List[pd.Timestamp] = []
@@ -186,7 +202,8 @@ class XGBoostRegressorStrategy(Strategy):
     def on_start(self) -> None:
         """
         Nautilus lifecycle callback:
-        - Subscribes to all universe daily bar streams.
+        - Subscribes to all universe daily bar streams (for features/targets).
+        - Subscribes to all universe opening quote streams (for T+1 open execution).
         - Resets the MonthlyRebalanceStrategy.
         - Initializes and attaches the Rebalancer to this Nautilus strategy state.
         """
@@ -195,6 +212,7 @@ class XGBoostRegressorStrategy(Strategy):
         )
         for bar_type in self.bar_types:
             self.subscribe_bars(bar_type)
+            self.subscribe_quotes(bar_type.instrument_id)
 
         self.rebalance_strategy.reset()
 
@@ -215,10 +233,10 @@ class XGBoostRegressorStrategy(Strategy):
             if self.rebalancer.base_currency is None:
                 self.rebalancer.base_currency = Currency.from_str(self.currency)
 
-        logger.info("XGBoostRegressorStrategy started and Rebalancer attached.")
+        logger.info("XGBoostRegressorStrategy started: Subscribed to bars and opening quotes.")
 
     def _extract_date(self, item: Any) -> pd.Timestamp:
-        """Normalizes Nautilus Bar timestamp to calendar session Timestamp."""
+        """Normalizes Nautilus Bar or QuoteTick timestamp to calendar session Timestamp."""
         if hasattr(item, "ts_init") or hasattr(item, "ts_event"):
             ts = getattr(item, "ts_init", None) or getattr(item, "ts_event")
             dt = pd.to_datetime(ts, unit="ns", utc=True).tz_convert("Asia/Kolkata")
@@ -227,77 +245,148 @@ class XGBoostRegressorStrategy(Strategy):
 
     def on_bar(self, bar: Bar) -> None:
         """
-        Nautilus lifecycle callback:
-        1. Records latest price for the incoming instrument.
-        2. Feeds bar to MonthlyRebalanceStrategy.
-        3. When a new calendar month starts:
-           - MonthlyRebalanceStrategy returns previous completed session as decision_date.
-           - Sets pending rebalance for decision_date.
-        4. Collects current-session prices across all instruments in the session.
-        5. Once the session's instruments have reported:
-           - Executes expanding-window model training (lookahead-free <= decision_date - 10d).
-           - Generates predictions for eligible stocks on decision_date.
-           - Runs Top-N selection and EqualWeightPortfolio construction.
-           - Invokes Rebalancer to size and submit Nautilus market orders.
-           - Clears pending rebalance state.
+        Nautilus lifecycle callback for daily closing bars (15:30 IST):
+        1. Records latest close price for the incoming instrument.
+        2. Tracks bars reporting in the current session.
+        3. Once all expected instruments have reported their session T bars, checks
+           whether session T is the final trading session of the calendar month (T close).
+        4. If session T is month-end, plans the rebalance using strictly data available
+           through session T close, and queues orders for execution at session T+1 open.
+           NO orders are submitted on session T.
         """
         inst_id = bar.bar_type.instrument_id
         bar_date = self._extract_date(bar)
         price = float(bar.close.as_double())
         self._latest_prices[inst_id] = price
 
-        # 1. Check if a pending rebalance exists and session date moved forward
-        if self._pending_decision_date is not None and self._pending_session_date is not None:
-            if bar_date > self._pending_session_date:
-                logger.info(
-                    "Session transitioned (%s -> %s). Executing pending rebalance for %s with collected prices.",
-                    self._pending_session_date.strftime("%Y-%m-%d"),
-                    bar_date.strftime("%Y-%m-%d"),
-                    self._pending_decision_date.strftime("%Y-%m-%d"),
-                )
-                self._execute_rebalance(
-                    self._pending_decision_date, self._collected_session_prices
-                )
-                self._pending_decision_date = None
-                self._pending_session_date = None
-                self._collected_session_prices.clear()
+        if bar_date not in self._session_reported_bars:
+            self._session_reported_bars[bar_date] = set()
+        self._session_reported_bars[bar_date].add(inst_id)
 
-        # 2. Step monthly scheduler
-        decision_date = self.rebalance_strategy.step(bar)
-        if decision_date is not None:
+        expected_instruments = self.instruments_by_date.get(bar_date)
+        if expected_instruments and self._session_reported_bars[bar_date] >= expected_instruments:
+            # Check if bar_date is month-end trading session T
+            date_idx = self.date_to_index.get(bar_date)
+            if date_idx is not None:
+                is_month_end = (
+                    date_idx == len(self.all_trading_dates) - 1
+                    or self.all_trading_dates[date_idx + 1].month != bar_date.month
+                )
+                if is_month_end and bar_date not in self._rebalance_plans_by_decision_date:
+                    logger.info(
+                        "Month-end trading session T close reached: %s. Planning lookahead-free rebalance...",
+                        bar_date.strftime("%Y-%m-%d"),
+                    )
+                    self._plan_and_queue_rebalance(bar_date)
+
+    def on_quote(self, quote: QuoteTick) -> None:
+        """
+        Nautilus lifecycle callback for opening QuoteTicks (09:15 IST):
+        1. Evaluates causal monthly scheduler. If a new calendar month starts and
+           a rebalance was not already planned at T close, plans the rebalance now using
+           information strictly available through session T close.
+        2. Releases queued order for quote.instrument_id when eligible.
+        3. Prevents duplicate order releases; different instruments release independently.
+        """
+        quote_date = self._extract_date(quote)
+
+        # Causal month-end detection fallback via MonthlyRebalanceStrategy
+        decision_date = self.rebalance_strategy.step(quote)
+        if (
+            decision_date is not None
+            and decision_date not in self._rebalance_plans_by_decision_date
+            and not self._queued_orders
+        ):
             logger.info(
-                "Monthly rebalance detected on session %s: decision_date=%s",
-                bar_date.strftime("%Y-%m-%d"),
+                "Causal month transition detected on opening quote %s (%s): planning rebalance for session T=%s",
+                quote.instrument_id,
+                quote_date.strftime("%Y-%m-%d"),
                 decision_date.strftime("%Y-%m-%d"),
             )
-            self._pending_decision_date = decision_date
-            self._pending_session_date = bar_date
-            self._collected_session_prices.clear()
+            self._plan_and_queue_rebalance(decision_date)
 
-        # 3. If rebalance is pending for this session, collect current-session price
-        if self._pending_decision_date is not None:
-            self._collected_session_prices[inst_id] = price
+        # Instrument-by-instrument release
+        if quote.instrument_id in self._queued_orders:
+            # Prevent release from an opening quote on or before decision date session T
+            if (
+                self._queued_execution_session is not None
+                and quote_date < self._queued_execution_session
+            ):
+                return
 
-            # Check if all expected instruments for this session have reported
-            expected_instruments = self.instruments_by_date.get(bar_date)
-            if expected_instruments and set(self._collected_session_prices.keys()) >= expected_instruments:
-                self._execute_rebalance(
-                    self._pending_decision_date, self._collected_session_prices
-                )
-                self._pending_decision_date = None
-                self._pending_session_date = None
-                self._collected_session_prices.clear()
+            instr = self._queued_orders.pop(quote.instrument_id)
+            intended_px = (
+                float(quote.ask_price.as_double())
+                if instr.order_side == OrderSide.BUY
+                else float(quote.bid_price.as_double())
+            )
+
+            self._order_execution_metadata[instr.order.client_order_id] = {
+                "intended_px": intended_px,
+                "quote_ts": quote.ts_event,
+                "instrument_id": quote.instrument_id,
+                "decision_date": self._queued_plan.decision_date if self._queued_plan else None,
+                "execution_session": quote_date,
+            }
+
+            logger.info(
+                "RELEASING QUEUED ORDER on opening quote: %s | quote_px=%.2f | quote_ts=%s | side=%s | qty=%s",
+                quote.instrument_id,
+                intended_px,
+                quote.ts_event,
+                instr.order_side.name,
+                instr.quantity,
+            )
+
+            order = self.rebalancer.submit_planned_order(instr)
+            if quote_date not in self._released_orders_by_date:
+                self._released_orders_by_date[quote_date] = []
+            self._released_orders_by_date[quote_date].append(order)
+
+    def on_order_filled(self, event: OrderFilled) -> None:
+        """
+        Nautilus lifecycle callback when an order fill event is received.
+        Distinguishes intended T+1 opening execution from actual fill details.
+        """
+        meta = self._order_execution_metadata.get(event.client_order_id)
+        fill_px = float(event.last_px.as_double())
+        fill_qty = float(event.last_qty.as_double())
+
+        if meta is not None:
+            intended_px = meta["intended_px"]
+            diff = fill_px - intended_px
+            logger.info(
+                "ORDER FILLED: %s | client_order_id=%s | side=%s | qty=%.2f | fill_px=%.2f (intended_open_px=%.2f, diff=%.4f) | fill_ts=%s | decision_date=%s | execution_session=%s",
+                event.instrument_id,
+                event.client_order_id,
+                event.order_side.name,
+                fill_qty,
+                fill_px,
+                intended_px,
+                diff,
+                event.ts_event,
+                meta.get("decision_date"),
+                meta.get("execution_session"),
+            )
+        else:
+            logger.info(
+                "ORDER FILLED: %s | client_order_id=%s | side=%s | qty=%.2f | fill_px=%.2f | fill_ts=%s",
+                event.instrument_id,
+                event.client_order_id,
+                event.order_side.name,
+                fill_qty,
+                fill_px,
+                event.ts_event,
+            )
 
     def on_stop(self) -> None:
         """Nautilus lifecycle callback when engine stops."""
-        if self._pending_decision_date is not None:
-            logger.info("Executing final pending rebalance before engine shutdown.")
-            self._execute_rebalance(
-                self._pending_decision_date, self._collected_session_prices
+        if self._queued_orders:
+            logger.info(
+                "Engine stopping with %d unreleased queued orders for execution session %s",
+                len(self._queued_orders),
+                self._queued_execution_session.strftime("%Y-%m-%d") if self._queued_execution_session else "N/A",
             )
-            self._pending_decision_date = None
-            self._pending_session_date = None
-            self._collected_session_prices.clear()
 
     def _get_fresh_model(self) -> BaseModel:
         """Instantiates a fresh model instance to avoid carryover state between folds."""
@@ -307,18 +396,14 @@ class XGBoostRegressorStrategy(Strategy):
             return type(self.model_prototype)(**self.model_prototype.params)
         return copy.deepcopy(self.model_prototype)
 
-    def _execute_rebalance(
-        self,
-        decision_date: pd.Timestamp,
-        session_prices: Dict[InstrumentId, float],
-    ) -> None:
+    def _plan_and_queue_rebalance(self, decision_date: pd.Timestamp) -> None:
         """
-        Executes ML training, prediction, selection, and portfolio rebalancing:
-        - Trains XGBoost regressor strictly on observations <= decision_date - 10 trading days.
-        - Predicts 10-day forward returns using features available on decision_date.
-        - Selects Top-N stocks and builds equal-weighted portfolio.
-        - Invokes Rebalancer with live equity and current market prices.
+        Prepares lookahead-free ML predictions, target weights, and planned order instructions
+        using strictly data available through session T close (decision_date).
+        Queues planned orders for instrument-by-instrument release at session T+1 open.
         """
+        self._rebalance_plans_by_decision_date.add(decision_date)
+
         # Step 1: Check minimum training history
         date_idx = self.date_to_index.get(decision_date)
         if date_idx is None:
@@ -335,7 +420,6 @@ class XGBoostRegressorStrategy(Strategy):
             return
 
         # Step 2: Determine training cutoff date (Lookahead prevention)
-        # Forward returns over target_horizon days from date tau realize on tau + target_horizon
         cutoff_idx = max(0, date_idx - self.target_horizon)
         train_cutoff_date = self.all_trading_dates[cutoff_idx]
 
@@ -405,11 +489,10 @@ class XGBoostRegressorStrategy(Strategy):
             else:
                 target_weights[f"{sym_clean}.{self.venue}"] = w
 
-        # Merge latest known prices with current session prices
+        # Reference prices: strictly as of session T close
         prices_for_rebalancer: Dict[Union[InstrumentId, str], float] = dict(self._latest_prices)
-        prices_for_rebalancer.update(session_prices)
 
-        # Fallback price check: ensure all target holdings have a valid price
+        # Fallback reference prices from current_bar_data
         for _, row in valid_current.iterrows():
             sym_str = str(row["Symbol"]).strip().upper()
             inst_id = self._symbol_to_instrument_id.get(sym_str)
@@ -417,22 +500,54 @@ class XGBoostRegressorStrategy(Strategy):
                 if "Close" in row and not pd.isna(row["Close"]) and float(row["Close"]) > 0:
                     prices_for_rebalancer[inst_id] = float(row["Close"])
 
-        # Step 6: Invoke Rebalancer
+        # Step 6: Plan Rebalance (Decoupled from execution)
         logger.info(
-            "Invoking Rebalancer for %d target symbols (Total Weight: %.4f)...",
+            "Planning Rebalance for %d target symbols (Total Weight: %.4f) at session T close (%s)...",
             len(target_weights),
             sum(target_weights.values()),
-        )
-        orders = self.rebalancer.rebalance(
-            target_weights=target_weights,
-            current_prices=prices_for_rebalancer,
-        )
-        self.orders_by_date[decision_date] = orders
-        logger.info(
-            "Rebalance for %s complete: %d orders submitted.",
             decision_date.strftime("%Y-%m-%d"),
-            len(orders),
         )
+        plan = self.rebalancer.plan_rebalance(
+            target_weights=target_weights,
+            reference_prices=prices_for_rebalancer,
+            decision_date=decision_date,
+        )
+
+        self._queued_plan = plan
+        self._queued_orders = dict(plan.instructions)
+
+        # Determine expected next trading session T+1
+        if date_idx is not None and date_idx + 1 < len(self.all_trading_dates):
+            self._queued_execution_session = self.all_trading_dates[date_idx + 1]
+        else:
+            self._queued_execution_session = None
+
+        self.orders_by_date[decision_date] = plan.all_orders
+
+        logger.info(
+            "REBALANCE QUEUED at %s close: %d instructions prepared for execution session %s. (No orders submitted on T)",
+            decision_date.strftime("%Y-%m-%d"),
+            len(self._queued_orders),
+            self._queued_execution_session.strftime("%Y-%m-%d") if self._queued_execution_session else "N/A",
+        )
+        for inst_id, instr in self._queued_orders.items():
+            logger.info(
+                "  QUEUED INSTRUCTION: %s | side=%s | qty=%s | target_qty=%.2f | ref_price=%.2f | target_weight=%.4f",
+                inst_id,
+                instr.order_side.name,
+                instr.quantity,
+                instr.target_qty,
+                instr.reference_price,
+                instr.target_weight,
+            )
+
+    def _execute_rebalance(
+        self,
+        decision_date: pd.Timestamp,
+        session_prices: Optional[Dict[InstrumentId, float]] = None,
+    ) -> None:
+        """Compatibility wrapper that triggers rebalance planning for decision_date."""
+        self._plan_and_queue_rebalance(decision_date)
 
     @classmethod
     def run(
@@ -535,6 +650,8 @@ class XGBoostRegressorStrategy(Strategy):
 
             engine.add_instrument(prepared.equity)
             engine.add_data(prepared.bars)
+            if prepared.opening_quotes:
+                engine.add_data(prepared.opening_quotes)
             bar_types.append(prepared.bar_type)
             featured_dfs.append(prepared.featured_df)
 
@@ -612,11 +729,11 @@ class XGBoostRegressorStrategy(Strategy):
 if __name__ == "__main__":
 
     configure_logging()
-    data_source = "NIFTY500"
+    data_source = "NIFTY200"
     logger.info("Starting XGBoost Regressor Strategy Backtest...")
     engine = XGBoostRegressorStrategy.run(
         data_source=f"data/raw/{data_source}",
-        starting_balance=10_000_000.0,
+        starting_balance=10_000_00.0,
         top_n=20,
         min_train_days=252*5,
     )

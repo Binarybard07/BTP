@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import pandas as pd
@@ -16,6 +17,46 @@ from nautilus_trader.portfolio import Portfolio
 from nautilus_trader.trading import Strategy
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PlannedOrderInstruction:
+    """
+    Structured order instruction generated during rebalance planning at session T close.
+    Contains the fully constructed Nautilus MarketOrder and associated sizing context.
+    """
+
+    order: MarketOrder
+    instrument_id: InstrumentId
+    current_qty: float
+    target_qty: float
+    required_qty: float
+    reference_price: float
+    target_weight: float
+    order_side: OrderSide
+    quantity: Quantity
+
+
+@dataclass
+class RebalancePlan:
+    """
+    Complete portfolio rebalance plan created from information available through session T close.
+    Decoupled from order execution/submission.
+    """
+
+    decision_date: Optional[pd.Timestamp]
+    portfolio_equity: float
+    instructions: Dict[InstrumentId, PlannedOrderInstruction]
+    sell_orders: List[PlannedOrderInstruction]
+    buy_orders: List[PlannedOrderInstruction]
+
+    @property
+    def all_instructions(self) -> List[PlannedOrderInstruction]:
+        return self.sell_orders + self.buy_orders
+
+    @property
+    def all_orders(self) -> List[MarketOrder]:
+        return [instr.order for instr in self.all_instructions]
 
 
 class Rebalancer:
@@ -175,27 +216,38 @@ class Rebalancer:
 
         return qty
 
-    def rebalance(
+    def plan_rebalance(
         self,
         target_weights: Dict[Union[InstrumentId, str], float],
-        current_prices: Dict[Union[InstrumentId, str], float],
+        reference_prices: Dict[Union[InstrumentId, str], float],
+        decision_date: Optional[pd.Timestamp] = None,
         *,
         instruments: Optional[Dict[Union[InstrumentId, str], Any]] = None,
-    ) -> List[MarketOrder]:
+    ) -> RebalancePlan:
         """
-        Executes a portfolio rebalance to achieve the specified target weights.
+        Plans a portfolio rebalance from target weights and reference prices available at decision date.
+        Calculates required quantities, verifies instrument lot sizes and precision,
+        and constructs Nautilus MarketOrder instances without submitting them.
+
+        Simulator Assumption:
+        Orders are sized using reference prices legitimately available at session T close.
+        Overnight price gaps between session T close and session T+1 open may cause realized
+        portfolio weights to drift from target weights. Realized drift is proportional to the
+        overnight price gap (open_T1 / close_T). Future opening prices are strictly not consumed
+        during planning.
 
         Parameters:
             target_weights: Mapping from InstrumentId/symbol to target portfolio weight (e.g. 0.05).
-            current_prices: Mapping from InstrumentId/symbol to current market price.
+            reference_prices: Mapping from InstrumentId/symbol to reference price (session T close).
+            decision_date: Optional decision timestamp (session T close).
             instruments: Optional mapping from InstrumentId/symbol to Instrument metadata.
 
         Returns:
-            List[MarketOrder]: Chronological list of submitted market orders (SELLs first, then BUYs).
+            RebalancePlan: Decoupled plan containing structured PlannedOrderInstructions.
         """
-        if self.portfolio is None or self.order_factory is None or self._submit_order_fn is None:
+        if self.portfolio is None or self.order_factory is None:
             raise RuntimeError(
-                "Rebalancer cannot execute: portfolio, order_factory, and submit_order must be initialized."
+                "Rebalancer cannot plan: portfolio and order_factory must be initialized."
             )
 
         # 1. Validate target weights
@@ -220,14 +272,15 @@ class Rebalancer:
             raise ValueError(f"Portfolio equity must be positive to size positions, got {current_equity:.2f}")
 
         logger.info(
-            "Starting rebalance: Portfolio Equity=%.2f, Target Holdings=%d, Total Weight=%.4f",
+            "Planning rebalance for decision date %s: Equity=%.2f, Target Holdings=%d, Total Weight=%.4f",
+            decision_date.strftime("%Y-%m-%d") if decision_date else "N/A",
             current_equity,
             len(normalized_weights),
             total_weight,
         )
 
         # 3. Handle instruments missing from target weights (Requirement 5)
-        # Any currently-held instrument missing from target_weights must have target_weight = 0
+        # Any currently-held instrument missing from target_weights must have target_weight = 0.0 (exit)
         if self.cache is not None:
             for pos in self.cache.positions_open():
                 inst_id = pos.instrument_id
@@ -236,12 +289,12 @@ class Rebalancer:
                     logger.info("Held instrument %s missing from target weights; treating as target_weight=0.0", inst_id)
                     normalized_weights[inst_id] = 0.0
 
-        # 4. Normalize prices and custom instruments
+        # 4. Normalize reference prices and custom instruments
         normalized_prices: Dict[InstrumentId, float] = {}
-        for key, p in current_prices.items():
+        for key, p in reference_prices.items():
             inst_id = self._resolve_instrument_id(key)
             if not isinstance(p, (int, float)) or pd.isna(p) or p <= 0.0:
-                raise ValueError(f"Invalid market price for '{inst_id}': {p}")
+                raise ValueError(f"Invalid market reference price for '{inst_id}': {p}")
             normalized_prices[inst_id] = float(p)
 
         inst_map: Dict[InstrumentId, Any] = {}
@@ -253,11 +306,12 @@ class Rebalancer:
         # 5. Check price availability for all target holdings with weight > 0
         for inst_id, weight in normalized_weights.items():
             if weight > 0.0 and inst_id not in normalized_prices:
-                raise ValueError(f"Missing current market price for target instrument '{inst_id}'")
+                raise ValueError(f"Missing reference market price for target instrument '{inst_id}'")
 
-        # 6. Sizing and separating orders into SELLs and BUYs
-        sell_orders: List[Tuple[MarketOrder, InstrumentId, float, float, float, float, float]] = []
-        buy_orders: List[Tuple[MarketOrder, InstrumentId, float, float, float, float, float]] = []
+        # 6. Sizing and preparing instructions into SELLs and BUYs
+        instructions_by_id: Dict[InstrumentId, PlannedOrderInstruction] = {}
+        sell_instructions: List[PlannedOrderInstruction] = []
+        buy_instructions: List[PlannedOrderInstruction] = []
 
         for inst_id, weight in normalized_weights.items():
             instrument = self._get_instrument(inst_id, custom_map=inst_map)
@@ -282,7 +336,19 @@ class Rebalancer:
                     order_side=OrderSide.SELL,
                     quantity=order_qty,
                 )
-                sell_orders.append((order, inst_id, current_qty, target_qty, required_qty, price, weight))
+                instruction = PlannedOrderInstruction(
+                    order=order,
+                    instrument_id=inst_id,
+                    current_qty=current_qty,
+                    target_qty=target_qty,
+                    required_qty=required_qty,
+                    reference_price=price,
+                    target_weight=weight,
+                    order_side=OrderSide.SELL,
+                    quantity=order_qty,
+                )
+                sell_instructions.append(instruction)
+                instructions_by_id[inst_id] = instruction
 
             elif required_qty > 0:
                 # Need to BUY
@@ -298,43 +364,111 @@ class Rebalancer:
                     order_side=OrderSide.BUY,
                     quantity=order_qty,
                 )
-                buy_orders.append((order, inst_id, current_qty, target_qty, required_qty, price, weight))
+                instruction = PlannedOrderInstruction(
+                    order=order,
+                    instrument_id=inst_id,
+                    current_qty=current_qty,
+                    target_qty=target_qty,
+                    required_qty=required_qty,
+                    reference_price=price,
+                    target_weight=weight,
+                    order_side=OrderSide.BUY,
+                    quantity=order_qty,
+                )
+                buy_instructions.append(instruction)
+                instructions_by_id[inst_id] = instruction
 
-        # 7. Rebalance Sequencing: Submit SELLs first to free capital, then submit BUYs (Requirement 10)
+        logger.info(
+            "Rebalance plan created: %d instructions (%d SELLs, %d BUYs)",
+            len(instructions_by_id),
+            len(sell_instructions),
+            len(buy_instructions),
+        )
+
+        return RebalancePlan(
+            decision_date=decision_date,
+            portfolio_equity=current_equity,
+            instructions=instructions_by_id,
+            sell_orders=sell_instructions,
+            buy_orders=buy_instructions,
+        )
+
+    def submit_planned_order(
+        self, instruction: Union[PlannedOrderInstruction, MarketOrder]
+    ) -> MarketOrder:
+        """
+        Releases a single planned order instruction to the Nautilus trading engine.
+        Called instrument-by-instrument upon arrival of that instrument's opening QuoteTick.
+        """
+        if self._submit_order_fn is None:
+            raise RuntimeError("Rebalancer cannot submit order: submit_order function is not initialized.")
+
+        if isinstance(instruction, PlannedOrderInstruction):
+            order = instruction.order
+            logger.info(
+                "REBALANCE ORDER [%s]: %s | order_qty=%s | current_qty=%.2f -> target_qty=%.2f (delta=%.2f) | ref_px=%.2f | weight=%.4f",
+                instruction.order_side.name,
+                instruction.instrument_id,
+                order.quantity,
+                instruction.current_qty,
+                instruction.target_qty,
+                instruction.required_qty,
+                instruction.reference_price,
+                instruction.target_weight,
+            )
+        else:
+            order = instruction
+            logger.info(
+                "REBALANCE ORDER [%s]: %s | order_qty=%s",
+                order.side.name,
+                order.instrument_id,
+                order.quantity,
+            )
+
+        self._submit_order_fn(order)
+        return order
+
+    def rebalance(
+        self,
+        target_weights: Dict[Union[InstrumentId, str], float],
+        current_prices: Dict[Union[InstrumentId, str], float],
+        *,
+        instruments: Optional[Dict[Union[InstrumentId, str], Any]] = None,
+        decision_date: Optional[pd.Timestamp] = None,
+    ) -> List[MarketOrder]:
+        """
+        Executes a portfolio rebalance immediately to achieve target weights.
+        Maintains backward compatibility by planning and sequentially submitting SELLs then BUYs.
+
+        Parameters:
+            target_weights: Mapping from InstrumentId/symbol to target portfolio weight (e.g. 0.05).
+            current_prices: Mapping from InstrumentId/symbol to current market price.
+            instruments: Optional mapping from InstrumentId/symbol to Instrument metadata.
+            decision_date: Optional decision timestamp.
+
+        Returns:
+            List[MarketOrder]: Chronological list of submitted market orders.
+        """
+        plan = self.plan_rebalance(
+            target_weights=target_weights,
+            reference_prices=current_prices,
+            decision_date=decision_date,
+            instruments=instruments,
+        )
+
         submitted_orders: List[MarketOrder] = []
+        for instr in plan.sell_orders:
+            self.submit_planned_order(instr)
+            submitted_orders.append(instr.order)
 
-        for order, inst_id, cur_q, tgt_q, delta_q, px, w in sell_orders:
-            logger.info(
-                "REBALANCE ORDER [SELL]: %s | order_qty=%s | current_qty=%.2f -> target_qty=%.2f (delta=%.2f) | price=%.2f | weight=%.4f",
-                inst_id,
-                order.quantity,
-                cur_q,
-                tgt_q,
-                delta_q,
-                px,
-                w,
-            )
-            self._submit_order_fn(order)
-            submitted_orders.append(order)
-
-        for order, inst_id, cur_q, tgt_q, delta_q, px, w in buy_orders:
-            logger.info(
-                "REBALANCE ORDER [BUY]:  %s | order_qty=%s | current_qty=%.2f -> target_qty=%.2f (delta=%.2f) | price=%.2f | weight=%.4f",
-                inst_id,
-                order.quantity,
-                cur_q,
-                tgt_q,
-                delta_q,
-                px,
-                w,
-            )
-            self._submit_order_fn(order)
-            submitted_orders.append(order)
+        for instr in plan.buy_orders:
+            self.submit_planned_order(instr)
+            submitted_orders.append(instr.order)
 
         logger.info(
             "Rebalance complete: Submitted %d orders (%d SELLs, %d BUYs)",
             len(submitted_orders),
-            len(sell_orders),
-            len(buy_orders),
+            len(plan.sell_orders),
+            len(plan.buy_orders),
         )
         return submitted_orders

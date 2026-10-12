@@ -11,6 +11,7 @@ from nautilus_trader.model import (
     InstrumentId,
     Price,
     Quantity,
+    QuoteTick,
     Symbol,
     Venue,
 )
@@ -19,7 +20,8 @@ from nautilus_trader.model import (
 class NautilusDataConverter:
     """
     Reusable, strategy-agnostic converter that transforms project data
-    into native NautilusTrader 2.0 objects (Equity instruments, BarType, and daily OHLCV Bar objects).
+    into native NautilusTrader 2.0 objects (Equity instruments, BarType, daily OHLCV Bar objects,
+    and synthetic opening QuoteTick objects).
     """
 
     DEFAULT_VENUE = "NSE"
@@ -45,6 +47,29 @@ class NautilusDataConverter:
             # If time is unset (e.g. 00:00:00 date), set to EOD close time (15:30 IST)
             if ts.hour == 0 and ts.minute == 0 and ts.second == 0:
                 ts = ts.replace(hour=15, minute=30, second=0)
+            ts_utc = ts.tz_localize("Asia/Kolkata").tz_convert("UTC")
+        else:
+            ts_utc = ts.tz_convert("UTC")
+
+        return int(ts_utc.value)
+
+    @staticmethod
+    def opening_timestamp_to_ns(ts_input: Any) -> int:
+        """
+        Converts a datetime, date, pd.Timestamp, or date string to Unix epoch nanoseconds (UTC).
+        If the timestamp is naive and represents a daily date (00:00:00),
+        it is localized to Indian equity market open (09:15:00 IST / Asia/Kolkata)
+        before conversion to UTC nanoseconds.
+        """
+        if isinstance(ts_input, int):
+            return ts_input
+
+        ts = pd.to_datetime(ts_input)
+
+        if ts.tzinfo is None:
+            # If time is unset (e.g. 00:00:00 date), set to session open time (09:15 IST)
+            if ts.hour == 0 and ts.minute == 0 and ts.second == 0:
+                ts = ts.replace(hour=9, minute=15, second=0)
             ts_utc = ts.tz_localize("Asia/Kolkata").tz_convert("UTC")
         else:
             ts_utc = ts.tz_convert("UTC")
@@ -147,6 +172,56 @@ class NautilusDataConverter:
             bars.append(bar)
 
         return bars
+
+    def df_to_opening_quote_ticks(
+        self,
+        df: pd.DataFrame,
+        instrument_id: Union[InstrumentId, str],
+        price_precision: int = DEFAULT_PRICE_PRECISION,
+        default_size: int = 1_000_000,
+    ) -> List[QuoteTick]:
+        """
+        Converts an OHLCV pandas DataFrame into a list of Nautilus QuoteTick objects
+        representing the opening quote of each session timestamped at 09:15:00 IST.
+
+        The recorded 'Open' price is used as both bid and ask (zero-spread simulator assumption)
+        with a large bid/ask size to ensure simulated market order fills without liquidity drops.
+        """
+        required_cols = {"Date", "Open"}
+        missing = required_cols - set(df.columns)
+        if missing:
+            raise ValueError(f"Input DataFrame missing required columns for opening quotes: {missing}")
+
+        inst_id = (
+            instrument_id
+            if isinstance(instrument_id, InstrumentId)
+            else InstrumentId.from_str(str(instrument_id))
+        )
+
+        quotes: List[QuoteTick] = []
+        df_sorted = df.sort_values(by="Date").reset_index(drop=True)
+        size_qty = Quantity.from_int(default_size)
+
+        for row in df_sorted.itertuples(index=False):
+            open_val = getattr(row, "Open")
+            if pd.isna(open_val) or float(open_val) <= 0.0:
+                continue
+
+            ts_ns = self.opening_timestamp_to_ns(row.Date)
+            price = Price(float(open_val), price_precision)
+
+            quote = QuoteTick(
+                instrument_id=inst_id,
+                bid_price=price,
+                ask_price=price,
+                bid_size=size_qty,
+                ask_size=size_qty,
+                ts_event=ts_ns,
+                ts_init=ts_ns,
+            )
+            quotes.append(quote)
+
+        return quotes
 
     def convert_dataframe(
         self,

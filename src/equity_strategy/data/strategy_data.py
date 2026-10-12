@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 import pandas as pd
 
-from nautilus_trader.model import Bar, BarType, Equity
+from nautilus_trader.model import Bar, BarType, Equity, QuoteTick
 
 from equity_strategy.data.loader import CSVDataLoader
 from equity_strategy.data.nautilus_data import NautilusDataConverter
@@ -21,6 +21,7 @@ class PreparedStrategyData:
     equity: Equity
     bar_type: BarType
     bars: List[Bar]
+    opening_quotes: Optional[List[QuoteTick]] = None
 
     def __iter__(self):
         return iter((self.featured_df, self.equity, self.bar_type, self.bars))
@@ -111,10 +112,16 @@ class StrategyDataPipeline:
             bar_type=bar_type,
             price_precision=price_precision,
         )
+        opening_quotes = self.converter.df_to_opening_quote_ticks(
+            featured_df,
+            instrument_id=equity.id,
+            price_precision=price_precision,
+        )
 
         return PreparedStrategyData(
             featured_df=featured_df,
             equity=equity,
             bar_type=bar_type,
             bars=bars,
+            opening_quotes=opening_quotes,
         )
