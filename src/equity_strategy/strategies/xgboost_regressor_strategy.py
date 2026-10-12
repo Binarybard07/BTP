@@ -60,6 +60,13 @@ from equity_strategy.rebalancing.rebalancer import (
     RebalancePlan,
     Rebalancer,
 )
+from equity_strategy.reporting import (
+    CostExporter,
+    MarketDataExporter,
+    NautilusExporter,
+    RunStore,
+    StrategyExporter,
+)
 from equity_strategy.selection.base import BaseSelector
 from equity_strategy.selection.top_n import TopNSelector
 from equity_strategy.selection.percentile import PercentileSelector
@@ -706,15 +713,21 @@ class XGBoostRegressorStrategy(Strategy):
 
         pipe = pipeline or StrategyDataPipeline()
 
-        pathlib.Path("strategy_results/logs").mkdir(parents=True,exist_ok=True)
-        cfg = engine_config or BacktestEngineConfig(trader_id=TraderId.from_str("TESTER-001"),
+        # Initialize per-run storage and manifest
+        run_store = RunStore(run_id=unique_id, base_dir="strategy_results")
+        run_dir = run_store.create_run_dir()
+
+        cfg = engine_config or BacktestEngineConfig(
+            trader_id=TraderId.from_str("TESTER-001"),
             logging=LoggerConfig(
-            stdout_level=LogLevel.OFF,
-            fileout_level=LogLevel.INFO,
-            component_levels={"Portfolio": "INFO"},
-            file_config=FileWriterConfig(
-                directory="strategy_results/logs",
-                file_name=f"nautilus_{XGBoostRegressorStrategy.__name__}_{unique_id}.log"))
+                stdout_level=LogLevel.OFF,
+                fileout_level=LogLevel.INFO,
+                component_levels={"Portfolio": "INFO"},
+                file_config=FileWriterConfig(
+                    directory=str(run_dir),
+                    file_name="nautilus.log",
+                ),
+            ),
         )
         engine = BacktestEngine(config=cfg)
 
@@ -755,6 +768,8 @@ class XGBoostRegressorStrategy(Strategy):
         bar_types: List[BarType] = []
         featured_dfs: List[pd.DataFrame] = []
         skipped_files: List[Tuple[str, Optional[str], str]] = []
+        all_bars_loaded: List[Bar] = []
+        all_quotes_loaded: List[QuoteTick] = []
 
         for src, sym in items_to_process:
             filename = (
@@ -783,8 +798,10 @@ class XGBoostRegressorStrategy(Strategy):
 
             engine.add_instrument(prepared.equity)
             engine.add_data(prepared.bars)
+            all_bars_loaded.extend(prepared.bars)
             if prepared.opening_quotes:
                 engine.add_data(prepared.opening_quotes)
+                all_quotes_loaded.extend(prepared.opening_quotes)
             bar_types.append(prepared.bar_type)
             featured_dfs.append(prepared.featured_df)
 
@@ -801,6 +818,13 @@ class XGBoostRegressorStrategy(Strategy):
             )
             for fname, s, err in skipped_files:
                 logger.warning("  - File: '%s', Symbol: '%s' -> %s", fname, s, err)
+
+        # Export loaded market data
+        MarketDataExporter.export(
+            bars=all_bars_loaded,
+            opening_quotes=all_quotes_loaded,
+            run_dir=run_dir,
+        )
 
         # Build pooled datasets across valid universe
         combined_featured_df = pd.concat(featured_dfs, ignore_index=True)
@@ -834,6 +858,25 @@ class XGBoostRegressorStrategy(Strategy):
                 InstrumentId.from_str(f"{s.strip().upper()}.{venue}")
                 for s in grp["Symbol"]
             }
+
+        # Initialize metadata manifest
+        loaded_symbols = [str(bt.instrument_id.symbol) for bt in bar_types]
+        config_summary = {
+            "data_source": str(data_source),
+            "symbol": symbol,
+            "starting_balance": starting_balance,
+            "venue": venue,
+            "currency": currency,
+            "target_horizon": target_horizon,
+            "target_column": target_column,
+            "min_train_days": min_train_days,
+            "top_n": top_n,
+            "start_date": start_date,
+            "end_date": end_date,
+            "enable_slippage": enable_slippage,
+            "slippage_pct": slippage_pct,
+        }
+        run_store.init_metadata(symbols=loaded_symbols, config=config_summary)
 
         engine.sort_data()
 
@@ -885,15 +928,44 @@ class XGBoostRegressorStrategy(Strategy):
         if start_ts is not None and end_ts is not None and start_ts >= end_ts:
             raise ValueError("start_date must be before end_date")
 
-    
-        engine.run()
-        return engine
+        try:
+            if start_ts is not None and end_ts is not None:
+                engine.run(start=start_ts, end=end_ts)
+            elif start_ts is not None:
+                engine.run(start=start_ts)
+            elif end_ts is not None:
+                engine.run(end=end_ts)
+            else:
+                engine.run()
+
+            # Post-run report and decision exports
+            NautilusExporter.export(
+                engine=engine,
+                run_dir=run_dir,
+                venue=venue,
+                currency=currency,
+            )
+            StrategyExporter.export(
+                strategy=strategy,
+                run_dir=run_dir,
+            )
+            CostExporter.export(
+                cost_report=strategy.get_cost_report(),
+                fee_model=active_fee_model if isinstance(active_fee_model, IndianEquityDeliveryFeeModel) else None,
+                recorder=recorder,
+                run_dir=run_dir,
+            )
+            run_store.complete_metadata()
+            return engine
+        except Exception as exc:
+            run_store.fail_metadata(error=str(exc))
+            raise
 
 
 if __name__ == "__main__":
 
     configure_logging()
-    data_source = "NIFTY50"
+    data_source = "NIFTY200"
     logger.info("Starting XGBoost Regressor Strategy Backtest...")
     unique_id = data_source + "_" + pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
 
@@ -903,18 +975,7 @@ if __name__ == "__main__":
         top_n=20,
         min_train_days=252*5,
         unique_id=unique_id,
-        start_date = "2015-01-01"
+        start_date="2015-01-01",
     )
 
-    try:
-        output_dir = pathlib.Path("strategy_results")
-        output_dir.mkdir(parents=True, exist_ok=True)
-        create_tearsheet(
-            engine=engine,
-            output_path=f"{output_dir}/{XGBoostRegressorStrategy.__name__}_{unique_id}.html",
-            title=f"{XGBoostRegressorStrategy.__name__} Backtest - {unique_id}",
-        )
-    except Exception as e:
-        logger.error("Could not generate tearsheet: %s", e)
-    
-    logger.info("=== Multi-Instrument XGBoost Regressor Backtest Completed ===")
+    logger.info("=== Multi-Instrument XGBoost Regressor Backtest Completed: %s ===", unique_id)

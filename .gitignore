@@ -16,3 +16,4 @@ wheels/
 *.pkl
 *.png
 *.log
+*.json
