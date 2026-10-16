@@ -18,3 +18,4 @@ wheels/
 *.log
 *.json
 Resources/
+nautilus_trader/

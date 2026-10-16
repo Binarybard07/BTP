@@ -28,9 +28,10 @@ from nautilus_trader.model import (
     QuoteTick,
     Venue,
 )
-from nautilus_trader.execution import FeeModel, FillModel
+from nautilus_trader.execution import FeeModel, FillModel, StaticLatencyModel
 from nautilus_trader.trading import Strategy, StrategyConfig
 
+from equity_strategy.strategies.base import BaseExecutionConfig, BaseExecutionStrategy
 from equity_strategy.execution import (
     AdverseSlippageConfig,
     AdverseSlippageFillModel,
@@ -39,7 +40,6 @@ from equity_strategy.execution import (
     ExecutionEventRecorder,
     IndianEquityDeliveryFeeModel,
     OrdinaryChargesConfig,
-    T1OpenExecution,
 )
 from equity_strategy.data.loader import CSVDataLoader
 from equity_strategy.data.nautilus_data import NautilusDataConverter
@@ -77,7 +77,7 @@ from equity_strategy.targets.engine import TargetEngine
 logger = logging.getLogger(__name__)
 
 
-class XGBoostRegressorConfig(StrategyConfig):
+class XGBoostRegressorConfig(BaseExecutionConfig):
     """
     Configuration for the event-driven XGBoostRegressorStrategy.
 
@@ -127,13 +127,23 @@ class XGBoostRegressorConfig(StrategyConfig):
         dp_charges_config: Optional[DPChargesConfig] = None,
         slippage_pct: float = 0.0005,
         enable_slippage: bool = True,
+        exchange_tz: str = "Asia/Kolkata",
         **kwargs: Any,
     ):
-        super().__init__(**kwargs)
-        self.bar_types = bar_types
+        super().__init__(
+            bar_types=bar_types,
+            all_trading_dates=all_trading_dates,
+            venue=venue,
+            currency=currency,
+            rebalancer=rebalancer,
+            fee_model=fee_model,
+            fill_model=fill_model,
+            recorder=recorder,
+            exchange_tz=exchange_tz,
+            **kwargs,
+        )
         self.featured_df = featured_df
         self.training_df = training_df
-        self.all_trading_dates = all_trading_dates or []
         self.instruments_by_date = instruments_by_date or {}
         self.feature_columns = list(feature_columns or FEATURE_COLUMNS)
         self.target_horizon = target_horizon
@@ -145,19 +155,13 @@ class XGBoostRegressorConfig(StrategyConfig):
         self.selector = selector or PercentileSelector(percentile=self.percentile)
         self.portfolio = portfolio or EqualWeightPortfolio()
         self.rebalance_strategy = rebalance_strategy or MonthlyRebalanceStrategy()
-        self.rebalancer = rebalancer
-        self.venue = venue
-        self.currency = currency
-        self.fee_model = fee_model
-        self.fill_model = fill_model
-        self.recorder = recorder
         self.ordinary_charges_config = ordinary_charges_config
         self.dp_charges_config = dp_charges_config
         self.slippage_pct = slippage_pct
         self.enable_slippage = enable_slippage
 
 
-class XGBoostRegressorStrategy(Strategy):
+class XGBoostRegressorStrategy(BaseExecutionStrategy):
     """
     Concrete Multi-Instrument XGBoost ML Strategy running on NautilusTrader.
 
@@ -176,19 +180,17 @@ class XGBoostRegressorStrategy(Strategy):
           ↓
         Rebalancer (equity-based sizing, lot size constraints, sells before buys)
           ↓
-        Nautilus Market Orders
+        Nautilus Market Orders via BaseExecutionStrategy T+1 Open Execution
     """
 
     def __init__(self, config: XGBoostRegressorConfig):
         super().__init__(config=config)
-        self.bar_types: List[BarType] = config.bar_types
         self.featured_df: pd.DataFrame = (
             config.featured_df if config.featured_df is not None else pd.DataFrame()
         )
         self.training_df: pd.DataFrame = (
             config.training_df if config.training_df is not None else pd.DataFrame()
         )
-        self.all_trading_dates: List[pd.Timestamp] = config.all_trading_dates
         self.instruments_by_date: Dict[pd.Timestamp, Set[InstrumentId]] = (
             config.instruments_by_date
         )
@@ -201,46 +203,12 @@ class XGBoostRegressorStrategy(Strategy):
         self.selector: BaseSelector = config.selector
         self.portfolio_constructor: BasePortfolio = config.portfolio
         self.rebalance_strategy: BaseRebalanceStrategy = config.rebalance_strategy
-        self.rebalancer: Optional[Rebalancer] = config.rebalancer
-        self.venue: str = config.venue
-        self.currency: str = config.currency
-        self.fee_model: Optional[FeeModel] = config.fee_model
-        self.fill_model: Optional[FillModel] = config.fill_model
-        self.recorder: Optional[ExecutionEventRecorder] = (
-            config.recorder
-            or getattr(config.fee_model, "recorder", None)
-            or getattr(config.fill_model, "recorder", None)
-        )
-
-        # Date to index lookup for chronological lookups
-        self.date_to_index: Dict[pd.Timestamp, int] = {
-            d: i for i, d in enumerate(self.all_trading_dates)
-        }
-
-        # Symbol string to InstrumentId lookup
-        self._symbol_to_instrument_id: Dict[str, InstrumentId] = {
-            str(bt.instrument_id.symbol).upper(): bt.instrument_id for bt in self.bar_types
-        }
-
-        # Market state tracking: latest close price per instrument
-        self._latest_prices: Dict[InstrumentId, float] = {}
 
         # Session tracking for multi-instrument bar collection
         self._session_reported_bars: Dict[pd.Timestamp, Set[InstrumentId]] = {}
 
         # Rebalance planning session records
         self._rebalance_plans_by_decision_date: Set[pd.Timestamp] = set()
-
-        # Reusable T+1 opening execution coordinator
-        self.t1_execution = T1OpenExecution(
-            strategy=self,
-            rebalancer=self.rebalancer,
-            trading_dates=self.all_trading_dates,
-            recorder=self.recorder,
-            fee_model=self.fee_model,
-            fill_model=self.fill_model,
-            exchange_tz="Asia/Kolkata",
-        )
 
         # Strategy telemetry and research history
         self.rebalance_dates: List[pd.Timestamp] = []
@@ -249,88 +217,22 @@ class XGBoostRegressorStrategy(Strategy):
         self.predictions_by_date: Dict[pd.Timestamp, pd.DataFrame] = {}
         self.orders_by_date: Dict[pd.Timestamp, List[Any]] = {}
 
-    @property
-    def _queued_orders(self) -> Dict[InstrumentId, PlannedOrderInstruction]:
-        """Compatibility property delegating to T1OpenExecution coordinator."""
-        return {q.instrument_id: q.instruction for q in self.t1_execution.pending_orders.values()}
-
-    @property
-    def _released_orders_by_date(self) -> Dict[pd.Timestamp, List[Any]]:
-        """Compatibility property delegating to T1OpenExecution coordinator."""
-        return self.t1_execution.released_orders_by_date
-
-    @property
-    def _order_execution_metadata(self) -> Dict[ClientOrderId, Dict[str, Any]]:
-        """Compatibility property delegating to T1OpenExecution coordinator."""
-        return self.t1_execution.order_execution_metadata
-
     def on_start(self) -> None:
         """
         Nautilus lifecycle callback:
-        - Subscribes to all universe daily bar streams (for features/targets).
-        - Subscribes to all universe opening quote streams (for T+1 open execution).
-        - Resets the MonthlyRebalanceStrategy.
-        - Initializes and attaches the Rebalancer to this Nautilus strategy state.
+        Initializes base execution infrastructure, subscribes to bars and opening quotes,
+        wires Rebalancer, and resets the MonthlyRebalanceStrategy.
         """
-        logger.info(
-            "Starting XGBoostRegressorStrategy with %d instruments...", len(self.bar_types)
-        )
-        for bar_type in self.bar_types:
-            self.subscribe_bars(bar_type)
-            self.subscribe_quotes(bar_type.instrument_id)
-
+        super().on_start()
         self.rebalance_strategy.reset()
-
-        if self.rebalancer is None:
-            self.rebalancer = Rebalancer(
-                strategy=self,
-                default_venue=self.venue,
-                base_currency=self.currency,
-            )
-        else:
-            self.rebalancer.strategy = self
-            self.rebalancer.portfolio = self.portfolio
-            self.rebalancer.cache = self.cache
-            self.rebalancer.order_factory = self.order_factory
-            self.rebalancer._submit_order_fn = self.submit_order
-            if self.rebalancer.default_venue is None:
-                self.rebalancer.default_venue = Venue(self.venue)
-            if self.rebalancer.base_currency is None:
-                self.rebalancer.base_currency = Currency.from_str(self.currency)
-
-        # Attach engine clock and shared recorder to execution cost models
-        if self.fee_model and hasattr(self.fee_model, "set_clock"):
-            self.fee_model.set_clock(self.clock)
-        if self.fill_model and hasattr(self.fill_model, "set_clock"):
-            self.fill_model.set_clock(self.clock)
-        if self.recorder is not None:
-            if self.fee_model and hasattr(self.fee_model, "set_recorder"):
-                self.fee_model.set_recorder(self.recorder)
-            if self.fill_model and hasattr(self.fill_model, "set_recorder"):
-                self.fill_model.set_recorder(self.recorder)
-
-        # Wire T1OpenExecution coordinator
-        self.t1_execution.rebalancer = self.rebalancer
-        self.t1_execution.recorder = self.recorder
-        self.t1_execution.fee_model = self.fee_model
-        self.t1_execution.fill_model = self.fill_model
-        if not self.t1_execution.trading_dates:
-            self.t1_execution.set_trading_dates(self.all_trading_dates)
-
-        logger.info("XGBoostRegressorStrategy started: Subscribed to bars and opening quotes.")
-
-    def _extract_date(self, item: Any) -> pd.Timestamp:
-        """Normalizes Nautilus Bar or QuoteTick timestamp to calendar session Timestamp."""
-        if hasattr(item, "ts_init") or hasattr(item, "ts_event"):
-            ts = getattr(item, "ts_init", None) or getattr(item, "ts_event")
-            dt = pd.to_datetime(ts, unit="ns", utc=True).tz_convert("Asia/Kolkata")
-            return pd.Timestamp(dt.date())
-        return pd.Timestamp(pd.to_datetime(item).date())
+        logger.info(
+            "XGBoostRegressorStrategy started with %d instruments.", len(self.bar_types)
+        )
 
     def on_bar(self, bar: Bar) -> None:
         """
         Nautilus lifecycle callback for daily closing bars (15:30 IST):
-        1. Records latest close price for the incoming instrument.
+        1. Tracks latest close price for the incoming instrument (via base class).
         2. Tracks bars reporting in the current session.
         3. Once all expected instruments have reported their session T bars, checks
            whether session T is the final trading session of the calendar month (T close).
@@ -338,10 +240,9 @@ class XGBoostRegressorStrategy(Strategy):
            through session T close, and queues orders for execution at session T+1 open.
            NO orders are submitted on session T.
         """
+        super().on_bar(bar)
         inst_id = bar.bar_type.instrument_id
-        bar_date = self._extract_date(bar)
-        price = float(bar.close.as_double())
-        self._latest_prices[inst_id] = price
+        bar_date = self.extract_session_date(bar)
 
         if bar_date not in self._session_reported_bars:
             self._session_reported_bars[bar_date] = set()
@@ -366,19 +267,17 @@ class XGBoostRegressorStrategy(Strategy):
     def on_quote(self, quote: QuoteTick) -> None:
         """
         Nautilus lifecycle callback for opening QuoteTicks (09:15 IST):
-        1. Evaluates causal monthly scheduler. If a new calendar month starts and
-           a rebalance was not already planned at T close, plans the rebalance now using
-           information strictly available through session T close.
-        2. Delegates T+1 opening execution release to T1OpenExecution coordinator.
+        1. Evaluates causal monthly scheduler fallback if not already planned at T close.
+        2. Delegates T+1 opening execution release to base strategy coordinator.
         """
-        quote_date = self._extract_date(quote)
+        quote_date = self.extract_session_date(quote)
 
         # Causal month-end detection fallback via MonthlyRebalanceStrategy
         decision_date = self.rebalance_strategy.step(quote)
         if (
             decision_date is not None
             and decision_date not in self._rebalance_plans_by_decision_date
-            and not self.t1_execution.has_pending_orders()
+            and not self.has_pending_orders()
         ):
             logger.info(
                 "Causal month transition detected on opening quote %s (%s): planning rebalance for session T=%s",
@@ -388,29 +287,7 @@ class XGBoostRegressorStrategy(Strategy):
             )
             self._plan_and_queue_rebalance(decision_date)
 
-        # Delegate opening quote release to T1OpenExecution coordinator
-        self.t1_execution.on_quote(quote)
-
-    def on_order_filled(self, event: OrderFilled) -> None:
-        """
-        Nautilus lifecycle callback when an order fill event is received.
-        Delegates fill reconciliation, slippage attribution, and fee tracking to T1OpenExecution.
-        """
-        self.t1_execution.on_order_filled(event)
-
-    def get_cost_report(self) -> ExecutionCostReport:
-        """Returns the consolidated ExecutionCostReport for this strategy."""
-        return ExecutionCostReport(
-            fee_model=self.fee_model if isinstance(self.fee_model, IndianEquityDeliveryFeeModel) else None,
-            fill_model=self.fill_model if isinstance(self.fill_model, AdverseSlippageFillModel) else None,
-        )
-
-    def on_stop(self) -> None:
-        """Nautilus lifecycle callback when engine stops."""
-        self.t1_execution.on_stop()
-        if self.fee_model is not None or self.fill_model is not None:
-            cost_report = self.get_cost_report()
-            logger.info("\n%s", cost_report.to_text())
+        super().on_quote(quote)
 
     def _get_fresh_model(self) -> BaseModel:
         """Instantiates a fresh model instance to avoid carryover state between folds."""
@@ -539,8 +416,8 @@ class XGBoostRegressorStrategy(Strategy):
 
         self.orders_by_date[decision_date] = plan.all_orders
 
-        # Delegate queueing to T1OpenExecution coordinator for strict T+1 opening execution
-        self.t1_execution.queue_plan(plan)
+        # Delegate queueing to base strategy method
+        self.queue_rebalance_plan(plan)
 
     def _execute_rebalance(
         self,
@@ -669,6 +546,7 @@ class XGBoostRegressorStrategy(Strategy):
             starting_balances=[Money(starting_balance, Currency.from_str(currency))],
             fee_model=active_fee_model,
             fill_model=active_fill_model,
+            latency_model=StaticLatencyModel(insert_latency_nanos=1_000_000),
         )
 
         bar_types: List[BarType] = []
