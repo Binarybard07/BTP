@@ -39,6 +39,7 @@ from equity_strategy.execution import (
     ExecutionEventRecorder,
     IndianEquityDeliveryFeeModel,
     OrdinaryChargesConfig,
+    T1OpenExecution,
 )
 from equity_strategy.data.loader import CSVDataLoader
 from equity_strategy.data.nautilus_data import NautilusDataConverter
@@ -227,13 +228,19 @@ class XGBoostRegressorStrategy(Strategy):
         # Session tracking for multi-instrument bar collection
         self._session_reported_bars: Dict[pd.Timestamp, Set[InstrumentId]] = {}
 
-        # Rebalance planning & T+1 opening execution state
-        self._queued_plan: Optional[RebalancePlan] = None
-        self._queued_orders: Dict[InstrumentId, PlannedOrderInstruction] = {}
-        self._queued_execution_session: Optional[pd.Timestamp] = None
+        # Rebalance planning session records
         self._rebalance_plans_by_decision_date: Set[pd.Timestamp] = set()
-        self._released_orders_by_date: Dict[pd.Timestamp, List[Any]] = {}
-        self._order_execution_metadata: Dict[ClientOrderId, Dict[str, Any]] = {}
+
+        # Reusable T+1 opening execution coordinator
+        self.t1_execution = T1OpenExecution(
+            strategy=self,
+            rebalancer=self.rebalancer,
+            trading_dates=self.all_trading_dates,
+            recorder=self.recorder,
+            fee_model=self.fee_model,
+            fill_model=self.fill_model,
+            exchange_tz="Asia/Kolkata",
+        )
 
         # Strategy telemetry and research history
         self.rebalance_dates: List[pd.Timestamp] = []
@@ -241,6 +248,21 @@ class XGBoostRegressorStrategy(Strategy):
         self.selected_stocks_by_date: Dict[pd.Timestamp, List[str]] = {}
         self.predictions_by_date: Dict[pd.Timestamp, pd.DataFrame] = {}
         self.orders_by_date: Dict[pd.Timestamp, List[Any]] = {}
+
+    @property
+    def _queued_orders(self) -> Dict[InstrumentId, PlannedOrderInstruction]:
+        """Compatibility property delegating to T1OpenExecution coordinator."""
+        return {q.instrument_id: q.instruction for q in self.t1_execution.pending_orders.values()}
+
+    @property
+    def _released_orders_by_date(self) -> Dict[pd.Timestamp, List[Any]]:
+        """Compatibility property delegating to T1OpenExecution coordinator."""
+        return self.t1_execution.released_orders_by_date
+
+    @property
+    def _order_execution_metadata(self) -> Dict[ClientOrderId, Dict[str, Any]]:
+        """Compatibility property delegating to T1OpenExecution coordinator."""
+        return self.t1_execution.order_execution_metadata
 
     def on_start(self) -> None:
         """
@@ -286,6 +308,14 @@ class XGBoostRegressorStrategy(Strategy):
                 self.fee_model.set_recorder(self.recorder)
             if self.fill_model and hasattr(self.fill_model, "set_recorder"):
                 self.fill_model.set_recorder(self.recorder)
+
+        # Wire T1OpenExecution coordinator
+        self.t1_execution.rebalancer = self.rebalancer
+        self.t1_execution.recorder = self.recorder
+        self.t1_execution.fee_model = self.fee_model
+        self.t1_execution.fill_model = self.fill_model
+        if not self.t1_execution.trading_dates:
+            self.t1_execution.set_trading_dates(self.all_trading_dates)
 
         logger.info("XGBoostRegressorStrategy started: Subscribed to bars and opening quotes.")
 
@@ -339,8 +369,7 @@ class XGBoostRegressorStrategy(Strategy):
         1. Evaluates causal monthly scheduler. If a new calendar month starts and
            a rebalance was not already planned at T close, plans the rebalance now using
            information strictly available through session T close.
-        2. Releases queued order for quote.instrument_id when eligible.
-        3. Prevents duplicate order releases; different instruments release independently.
+        2. Delegates T+1 opening execution release to T1OpenExecution coordinator.
         """
         quote_date = self._extract_date(quote)
 
@@ -349,7 +378,7 @@ class XGBoostRegressorStrategy(Strategy):
         if (
             decision_date is not None
             and decision_date not in self._rebalance_plans_by_decision_date
-            and not self._queued_orders
+            and not self.t1_execution.has_pending_orders()
         ):
             logger.info(
                 "Causal month transition detected on opening quote %s (%s): planning rebalance for session T=%s",
@@ -359,110 +388,15 @@ class XGBoostRegressorStrategy(Strategy):
             )
             self._plan_and_queue_rebalance(decision_date)
 
-        # Instrument-by-instrument release
-        if quote.instrument_id in self._queued_orders:
-            # Prevent release from an opening quote on or before decision date session T
-            if (
-                self._queued_execution_session is not None
-                and quote_date < self._queued_execution_session
-            ):
-                return
-
-            instr = self._queued_orders.pop(quote.instrument_id)
-            intended_px = (
-                float(quote.ask_price.as_double())
-                if instr.order_side == OrderSide.BUY
-                else float(quote.bid_price.as_double())
-            )
-
-            self._order_execution_metadata[instr.order.client_order_id] = {
-                "intended_px": intended_px,
-                "quote_ts": quote.ts_event,
-                "instrument_id": quote.instrument_id,
-                "decision_date": self._queued_plan.decision_date if self._queued_plan else None,
-                "execution_session": quote_date,
-            }
-
-            # Register execution session and reference price before submitting to matching engine
-            cid = instr.order.client_order_id
-            if self.recorder is not None:
-                self.recorder.register_order_release(
-                    client_order_id=cid,
-                    timestamp_ns=quote.ts_event,
-                    intended_price=intended_px,
-                )
-            if self.fee_model and hasattr(self.fee_model, "register_execution_session"):
-                self.fee_model.register_execution_session(
-                    client_order_id=cid,
-                    timestamp_ns=quote.ts_event,
-                    session_date=quote_date,
-                )
-            if self.fill_model and hasattr(self.fill_model, "register_reference_price"):
-                self.fill_model.register_reference_price(
-                    client_order_id=cid,
-                    reference_price=intended_px,
-                )
-
-            logger.info(
-                "RELEASING QUEUED ORDER on opening quote: %s | quote_px=%.2f | quote_ts=%s | side=%s | qty=%s",
-                quote.instrument_id,
-                intended_px,
-                quote.ts_event,
-                instr.order_side.name,
-                instr.quantity,
-            )
-
-            order = self.rebalancer.submit_planned_order(instr)
-            if quote_date not in self._released_orders_by_date:
-                self._released_orders_by_date[quote_date] = []
-            self._released_orders_by_date[quote_date].append(order)
+        # Delegate opening quote release to T1OpenExecution coordinator
+        self.t1_execution.on_quote(quote)
 
     def on_order_filled(self, event: OrderFilled) -> None:
         """
         Nautilus lifecycle callback when an order fill event is received.
-        Distinguishes intended T+1 opening execution from actual fill details.
-        Authoritatively records slippage attribution and links fill trade IDs.
+        Delegates fill reconciliation, slippage attribution, and fee tracking to T1OpenExecution.
         """
-        # Record actual execution fill in FillModel for slippage attribution
-        if self.fill_model and hasattr(self.fill_model, "record_fill"):
-            self.fill_model.record_fill(event)
-
-        # Notify FeeModel of authoritative fill details
-        if self.fee_model and hasattr(self.fee_model, "on_order_filled"):
-            self.fee_model.on_order_filled(event)
-
-        meta = self._order_execution_metadata.get(event.client_order_id)
-        fill_px = float(event.last_px.as_double())
-        fill_qty = float(event.last_qty.as_double())
-
-        if meta is not None:
-            intended_px = meta["intended_px"]
-            diff = fill_px - intended_px
-            logger.info(
-                "ORDER FILLED: %s | client_order_id=%s | trade_id=%s | side=%s | qty=%.2f | fill_px=%.2f (intended_open_px=%.2f, diff=%.4f) | fill_ts=%s | decision_date=%s | execution_session=%s",
-                event.instrument_id,
-                event.client_order_id,
-                event.trade_id,
-                event.order_side.name,
-                fill_qty,
-                fill_px,
-                intended_px,
-                diff,
-                event.ts_event,
-                meta.get("decision_date"),
-                meta.get("execution_session"),
-            )
-        else:
-            logger.info(
-                "ORDER FILLED: %s | client_order_id=%s | trade_id=%s | side=%s | qty=%.2f | fill_px=%.2f | fill_ts=%s",
-                event.instrument_id,
-                event.client_order_id,
-                event.trade_id,
-                event.order_side.name,
-                fill_qty,
-                fill_px,
-                event.ts_event,
-            )
+        self.t1_execution.on_order_filled(event)
 
     def get_cost_report(self) -> ExecutionCostReport:
         """Returns the consolidated ExecutionCostReport for this strategy."""
@@ -473,12 +407,7 @@ class XGBoostRegressorStrategy(Strategy):
 
     def on_stop(self) -> None:
         """Nautilus lifecycle callback when engine stops."""
-        if self._queued_orders:
-            logger.info(
-                "Engine stopping with %d unreleased queued orders for execution session %s",
-                len(self._queued_orders),
-                self._queued_execution_session.strftime("%Y-%m-%d") if self._queued_execution_session else "N/A",
-            )
+        self.t1_execution.on_stop()
         if self.fee_model is not None or self.fill_model is not None:
             cost_report = self.get_cost_report()
             logger.info("\n%s", cost_report.to_text())
@@ -608,33 +537,10 @@ class XGBoostRegressorStrategy(Strategy):
             decision_date=decision_date,
         )
 
-        self._queued_plan = plan
-        self._queued_orders = dict(plan.instructions)
-
-        # Determine expected next trading session T+1
-        if date_idx is not None and date_idx + 1 < len(self.all_trading_dates):
-            self._queued_execution_session = self.all_trading_dates[date_idx + 1]
-        else:
-            self._queued_execution_session = None
-
         self.orders_by_date[decision_date] = plan.all_orders
 
-        logger.info(
-            "REBALANCE QUEUED at %s close: %d instructions prepared for execution session %s. (No orders submitted on T)",
-            decision_date.strftime("%Y-%m-%d"),
-            len(self._queued_orders),
-            self._queued_execution_session.strftime("%Y-%m-%d") if self._queued_execution_session else "N/A",
-        )
-        for inst_id, instr in self._queued_orders.items():
-            logger.info(
-                "  QUEUED INSTRUCTION: %s | side=%s | qty=%s | target_qty=%.2f | ref_price=%.2f | target_weight=%.4f",
-                inst_id,
-                instr.order_side.name,
-                instr.quantity,
-                instr.target_qty,
-                instr.reference_price,
-                instr.target_weight,
-            )
+        # Delegate queueing to T1OpenExecution coordinator for strict T+1 opening execution
+        self.t1_execution.queue_plan(plan)
 
     def _execute_rebalance(
         self,
