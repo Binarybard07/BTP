@@ -406,7 +406,7 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
     @classmethod
     def run(
         cls,
-        data_source: Union[str, pathlib.Path, pd.DataFrame] = "data/raw/Final_NIFTY50_EoD_Data",
+        data_source: Union[str, pathlib.Path, pd.DataFrame] = "data/raw/NIFTY50",
         symbol: Optional[str] = None,
         venue: str = "NSE",
         currency: str = "INR",

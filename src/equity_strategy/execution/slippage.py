@@ -2,7 +2,7 @@ import abc
 from dataclasses import dataclass
 import logging
 import math
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional
 
 from nautilus_trader.execution import FillModel
 from nautilus_trader.model import (
