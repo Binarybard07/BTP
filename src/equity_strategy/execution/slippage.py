@@ -1,8 +1,8 @@
+import abc
 from dataclasses import dataclass
 import logging
 import math
-from typing import Any, Dict, List, Optional, Set
-import pandas as pd
+from typing import Any, Dict, Optional, Union
 
 from nautilus_trader.execution import FillModel
 from nautilus_trader.model import (
@@ -16,10 +16,142 @@ from nautilus_trader.model import (
     Price,
     Quantity,
 )
-from equity_strategy.execution.recorder import ExecutionEventRecorder
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# 1. Modular Slippage Calculation Methods
+# ---------------------------------------------------------------------------
+
+class SlippageMethod(abc.ABC):
+    """
+    Abstract interface for execution price slippage calculation methods.
+
+    Separates the mathematical price adjustment logic from NautilusTrader's
+    order book construction, tick rounding, and execution fill lifecycle.
+    """
+
+    @abc.abstractmethod
+    def calculate_adjusted_price(
+        self,
+        reference_price: float,
+        is_buy: bool,
+        instrument: Any,
+        best_bid: float,
+        best_ask: float,
+    ) -> float:
+        """
+        Calculates the raw adjusted executable price before tick-precision rounding.
+
+        Parameters:
+            reference_price: Original un-slipped market price (best_ask for BUY, best_bid for SELL).
+            is_buy: True for BUY orders, False for SELL orders.
+            instrument: The Instrument being traded.
+            best_bid: Top-of-book best bid price.
+            best_ask: Top-of-book best ask price.
+
+        Returns:
+            float: Adjusted executable price.
+        """
+        pass
+
+
+class ZeroSlippage(SlippageMethod):
+    """Zero slippage method for baseline cost-free comparison."""
+
+    def calculate_adjusted_price(
+        self,
+        reference_price: float,
+        is_buy: bool,
+        instrument: Any,
+        best_bid: float,
+        best_ask: float,
+    ) -> float:
+        return reference_price
+
+
+class PercentSlippage(SlippageMethod):
+    """
+    Percentage-based adverse execution slippage.
+
+    Parameters:
+        slippage_pct: Adverse slippage percentage per side (e.g., 0.0005 = 0.05% = 5 bps).
+    """
+
+    def __init__(self, slippage_pct: float = 0.0005) -> None:
+        self.slippage_pct = max(0.0, float(slippage_pct))
+
+    def calculate_adjusted_price(
+        self,
+        reference_price: float,
+        is_buy: bool,
+        instrument: Any,
+        best_bid: float,
+        best_ask: float,
+    ) -> float:
+        if self.slippage_pct <= 0.0:
+            return reference_price
+        if is_buy:
+            return reference_price * (1.0 + self.slippage_pct)
+        return reference_price * (1.0 - self.slippage_pct)
+
+
+class FixedTickSlippage(SlippageMethod):
+    """
+    Fixed price or tick-based adverse execution slippage.
+
+    Parameters:
+        ticks: Number of instrument price increments to slip adversely.
+    """
+
+    def __init__(self, ticks: int = 1) -> None:
+        self.ticks = max(0, int(ticks))
+
+    def calculate_adjusted_price(
+        self,
+        reference_price: float,
+        is_buy: bool,
+        instrument: Any,
+        best_bid: float,
+        best_ask: float,
+    ) -> float:
+        increment = float(getattr(instrument, "price_increment", None) or 0.05)
+        tick_delta = self.ticks * increment
+        if is_buy:
+            return reference_price + tick_delta
+        return reference_price - tick_delta
+
+
+class SpreadSlippage(SlippageMethod):
+    """
+    Spread-based adverse execution slippage.
+
+    Parameters:
+        spread_pct: Fraction of the prevailing bid-ask spread to slip adversely (default: 0.5).
+    """
+
+    def __init__(self, spread_pct: float = 0.5) -> None:
+        self.spread_pct = max(0.0, float(spread_pct))
+
+    def calculate_adjusted_price(
+        self,
+        reference_price: float,
+        is_buy: bool,
+        instrument: Any,
+        best_bid: float,
+        best_ask: float,
+    ) -> float:
+        spread = max(0.0, best_ask - best_bid)
+        spread_delta = spread * self.spread_pct
+        if is_buy:
+            return reference_price + spread_delta
+        return reference_price - spread_delta
+
+
+# ---------------------------------------------------------------------------
+# 2. Configuration Wrapper (Backward-Compatible)
+# ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class AdverseSlippageConfig:
@@ -27,8 +159,7 @@ class AdverseSlippageConfig:
     Configuration parameters for execution slippage simulation.
 
     Parameters:
-        slippage_pct: Adverse slippage percentage per side (default: 0.0005 = 0.05% = 5 bps).
-                      Set to 0.0 for zero-slippage baseline comparison.
+        slippage_pct: Adverse percentage slippage per side (default: 0.0005 = 5 bps).
         enabled: Toggle to enable or bypass slippage simulation.
     """
 
@@ -36,85 +167,128 @@ class AdverseSlippageConfig:
     enabled: bool = True
 
 
-class AdverseSlippageFillModel(FillModel):
-    """
-    NautilusTrader FillModel providing realistic adverse execution slippage for equity orders.
+# ---------------------------------------------------------------------------
+# 3. Modular NautilusTrader FillModel Integration
+# ---------------------------------------------------------------------------
 
-    Mechanics:
-    - Responsible ONLY for supplying adverse execution prices to Nautilus's matching engine
-      via `get_orderbook_for_fill_simulation`.
-    - Preserves un-slipped market reference prices for each order.
-    - Slipped prices are rounded strictly in adverse tick increments using the instrument's
-      native tick size (ceil for BUY, floor for SELL).
-    - Fills are NOT recorded during order-book construction. Slippage attribution is recorded
-      strictly from actual `OrderFilled` events, supporting multiple partial fills per order ID.
-    - Raw Nautilus fill records remain authoritative; no duplicate or fake executions are created.
-    - Supports a 0.0 baseline mode for zero-cost comparison.
+class SlippageFillModel(FillModel):
+    """
+    Shared NautilusTrader FillModel coordinating modular price slippage methods,
+    adverse tick-precision rounding, and reference-price attribution.
+
+    Responsibilities:
+    1. Delegates executable price calculation to a configurable `SlippageMethod`.
+    2. Applies instrument-consistent adverse tick increments (ceil for BUY, floor for SELL).
+    3. Preserves minimal un-slipped reference prices for each order and fill.
+    4. Supports partial fills: all fills for an order map reliably to the reference price.
+    5. Raises explicit errors when reference price metadata is missing instead of silent zero fallback.
     """
 
-    def __new__(cls, *args: Any, **kwargs: Any) -> "AdverseSlippageFillModel":
+    def __new__(cls, *args: Any, **kwargs: Any) -> "SlippageFillModel":
         return super().__new__(cls)
 
     def __init__(
         self,
+        method: Optional[SlippageMethod] = None,
+        *,
         config: Optional[AdverseSlippageConfig] = None,
         slippage_pct: Optional[float] = None,
-        recorder: Optional[ExecutionEventRecorder] = None,
-        exchange_tz: str = "Asia/Kolkata",
+        **kwargs: Any,
     ) -> None:
         super().__init__()
-        self.config = config or AdverseSlippageConfig()
-        if slippage_pct is not None:
-            self.slippage_pct = float(slippage_pct)
+
+        # Resolve SlippageMethod from parameters
+        if method is not None:
+            self.method = method
+        elif config is not None and not config.enabled:
+            self.method = ZeroSlippage()
+        elif slippage_pct is not None:
+            self.method = PercentSlippage(slippage_pct) if slippage_pct > 0.0 else ZeroSlippage()
+        elif config is not None:
+            self.method = PercentSlippage(config.slippage_pct) if config.slippage_pct > 0.0 else ZeroSlippage()
         else:
-            self.slippage_pct = self.config.slippage_pct if self.config.enabled else 0.0
+            self.method = PercentSlippage(0.0005)
 
-        self.recorder = recorder
-        self.exchange_tz = exchange_tz
-
-        # Preserved reference prices: ClientOrderId -> un-slipped price
-        self._reference_prices: Dict[str, float] = {}
-
-        # Tracking for actual fills (when used standalone without recorder)
-        self._slippage_records: List[Dict[str, Any]] = []
-        self._recorded_trade_ids: Set[str] = set()
-
-    def set_recorder(self, recorder: ExecutionEventRecorder) -> None:
-        """Attaches an ExecutionEventRecorder to coordinate reference prices and fills."""
-        self.recorder = recorder
-
-    def reset(self) -> None:
-        """Clears preserved reference prices, fill records, and state."""
-        self._reference_prices.clear()
-        self._slippage_records.clear()
-        self._recorded_trade_ids.clear()
-        if self.recorder is not None:
-            self.recorder.reset()
+        # Minimal reference-price metadata:
+        # 1. client_order_id -> un-slipped reference price (set during book simulation)
+        self._order_reference_prices: Dict[str, float] = {}
+        # 2. trade_id -> un-slipped reference price (associated on OrderFilled)
+        self._fill_reference_prices: Dict[str, float] = {}
 
     def is_slipped(self) -> bool:
-        """Indicates whether this model applies price slippage."""
-        return self.slippage_pct > 0.0
+        """
+        Returns False to prevent NautilusTrader from applying an unintended secondary
+        one-tick slippage draw on top of our synthetic OrderBook price levels.
+        """
+        return False
 
-    def register_reference_price(
-        self,
-        client_order_id: Any,
-        reference_price: float,
-        slipped_price: Optional[float] = None,
-    ) -> None:
-        """Preserves the un-slipped reference price for an order."""
-        cid = str(client_order_id)
-        self._reference_prices[cid] = float(reference_price)
-        if self.recorder is not None:
-            self.recorder.register_reference_price(cid, reference_price, slipped_price)
+    @property
+    def has_slippage(self) -> bool:
+        """Indicates whether this model applies non-zero price slippage."""
+        return not isinstance(self.method, ZeroSlippage)
 
-    def get_reference_price(self, client_order_id: Any) -> Optional[float]:
-        """Returns the preserved un-slipped reference price for an order."""
-        cid = str(client_order_id)
-        if self.recorder is not None:
-            ref = self.recorder.get_reference_price(cid)
-            if ref is not None:
-                return ref
-        return self._reference_prices.get(cid)
+    @property
+    def slippage_pct(self) -> float:
+        """Returns the configured percentage slippage, or 0.0 if not percent-based."""
+        if isinstance(self.method, PercentSlippage):
+            return self.method.slippage_pct
+        return 0.0
+
+    def reset(self) -> None:
+        """Clears all preserved reference-price associations."""
+        self._order_reference_prices.clear()
+        self._fill_reference_prices.clear()
+
+    def get_reference_price(self, identifier: Any) -> float:
+        """
+        Retrieves the un-slipped reference price for a given client order ID or trade ID.
+
+        Raises:
+            KeyError: If no reference price is registered for the identifier.
+        """
+        key = str(identifier)
+        if key in self._fill_reference_prices:
+            return self._fill_reference_prices[key]
+        if key in self._order_reference_prices:
+            return self._order_reference_prices[key]
+
+        raise KeyError(f"No reference price registered for identifier '{key}'.")
+
+    def record_fill(self, event: OrderFilled) -> float:
+        """
+        Associates an authoritative OrderFilled event with the order's reference price
+        and calculates adverse slippage per share. Correctly handles multiple partial fills.
+
+        Parameters:
+            event: The OrderFilled event from Nautilus.
+
+        Returns:
+            float: Slipped price difference per share (adverse >= 0.0).
+
+        Raises:
+            KeyError: If the order's reference price was not preserved.
+        """
+        cid = str(event.client_order_id)
+        trade_id = str(event.trade_id)
+
+        if cid not in self._order_reference_prices:
+            raise KeyError(
+                f"Missing reference price metadata for client_order_id='{cid}' on trade_id='{trade_id}'. "
+                f"Cannot attribute execution slippage."
+            )
+
+        ref_px = self._order_reference_prices[cid]
+        self._fill_reference_prices[trade_id] = ref_px
+
+        fill_px = float(event.last_px.as_double())
+        is_buy = bool(event.is_buy)
+
+        if is_buy:
+            slippage_per_share = round(max(0.0, fill_px - ref_px), 4)
+        else:
+            slippage_per_share = round(max(0.0, ref_px - fill_px), 4)
+
+        return slippage_per_share
 
     def get_orderbook_for_fill_simulation(
         self,
@@ -124,8 +298,7 @@ class AdverseSlippageFillModel(FillModel):
         best_ask: Price,
     ) -> Optional[OrderBook]:
         """
-        Generates a synthetic order book with adverse slippage applied to the executable price.
-        Does NOT record fills or slippage attribution here. Preserves the reference price only.
+        Supplies a synthetic order book with adverse price adjustment to Nautilus's matching engine.
 
         Parameters:
             instrument: The Instrument being traded.
@@ -134,19 +307,8 @@ class AdverseSlippageFillModel(FillModel):
             best_ask: Top of book best ask price.
 
         Returns:
-            OrderBook with slipped price levels, or None if slippage is zero/disabled.
+            OrderBook with slipped price levels, or None if slippage is zero.
         """
-        if self.slippage_pct <= 0.0:
-            if order is not None and best_ask is not None and best_bid is not None:
-                is_buy = (
-                    order.side == OrderSide.BUY
-                    if hasattr(order, "side")
-                    else getattr(order, "is_buy", True)
-                )
-                un_slipped_px = best_ask.as_double() if is_buy else best_bid.as_double()
-                self.register_reference_price(order.client_order_id, un_slipped_px)
-            return None
-
         if (
             instrument is None
             or order is None
@@ -160,7 +322,6 @@ class AdverseSlippageFillModel(FillModel):
         if bid_px <= 0.0 or ask_px <= 0.0:
             return None
 
-        # Determine order side (BUY vs SELL)
         if hasattr(order, "side"):
             is_buy = order.side == OrderSide.BUY
         elif hasattr(order, "is_buy"):
@@ -168,189 +329,53 @@ class AdverseSlippageFillModel(FillModel):
         else:
             is_buy = True
 
-        increment = (
-            float(instrument.price_increment)
-            if getattr(instrument, "price_increment", None) is not None
-            else 0.05
+        ref_px = ask_px if is_buy else bid_px
+        cid = str(getattr(order, "client_order_id", ""))
+        if cid:
+            self._order_reference_prices[cid] = ref_px
+
+        # Zero slippage returns None, letting Nautilus match natively against the original quote
+        if isinstance(self.method, ZeroSlippage):
+            return None
+
+        raw_slipped_px = self.method.calculate_adjusted_price(
+            reference_price=ref_px,
+            is_buy=is_buy,
+            instrument=instrument,
+            best_bid=bid_px,
+            best_ask=ask_px,
         )
-        precision = (
-            instrument.price_precision
-            if getattr(instrument, "price_precision", None) is not None
-            else 2
-        )
+
+        increment = float(getattr(instrument, "price_increment", None) or 0.05)
+        precision = int(getattr(instrument, "price_precision", None) or 2)
+
+        # Adverse tick rounding:
+        # BUY matches Ask -> higher slipped price -> ceil
+        # SELL matches Bid -> lower slipped price -> floor
+        if is_buy:
+            ticks = math.ceil((raw_slipped_px / increment) - 1e-9)
+        else:
+            ticks = math.floor((raw_slipped_px / increment) + 1e-9)
+
+        slipped_px = round(ticks * increment, precision)
 
         order_qty = getattr(order, "quantity", None) or Quantity.from_int(1_000_000)
         book_size = max(order_qty, Quantity.from_int(1_000_000))
 
-        client_order_id = str(getattr(order, "client_order_id", ""))
-
         book = OrderBook(instrument.id, BookType.L1_MBP)
-
         if is_buy:
-            # BUY order matches against Ask. Slipped ask is HIGHER (ceil to tick).
-            un_slipped_px = ask_px
-            raw_slipped = un_slipped_px * (1.0 + self.slippage_pct)
-            ticks = math.ceil((raw_slipped / increment) - 1e-9)
-            slipped_px = round(ticks * increment, precision)
-
-            # Preserve reference price for later OrderFilled attribution
-            self.register_reference_price(client_order_id, un_slipped_px, slipped_px)
-
-            ask_order = BookOrder(
-                OrderSide.SELL,
-                Price(slipped_px, precision),
-                book_size,
-                1,
-            )
-            bid_order = BookOrder(
-                OrderSide.BUY,
-                best_bid,
-                book_size,
-                2,
-            )
-            book.apply_delta(
-                OrderBookDelta(instrument.id, BookAction.ADD, ask_order, 0, 1, 0, 0)
-            )
-            book.apply_delta(
-                OrderBookDelta(instrument.id, BookAction.ADD, bid_order, 0, 2, 0, 0)
-            )
+            ask_order = BookOrder(OrderSide.SELL, Price(slipped_px, precision), book_size, 1)
+            bid_order = BookOrder(OrderSide.BUY, best_bid, book_size, 2)
+            book.apply_delta(OrderBookDelta(instrument.id, BookAction.ADD, ask_order, 0, 1, 0, 0))
+            book.apply_delta(OrderBookDelta(instrument.id, BookAction.ADD, bid_order, 0, 2, 0, 0))
         else:
-            # SELL order matches against Bid. Slipped bid is LOWER (floor to tick).
-            un_slipped_px = bid_px
-            raw_slipped = un_slipped_px * (1.0 - self.slippage_pct)
-            ticks = math.floor((raw_slipped / increment) + 1e-9)
-            slipped_px = round(ticks * increment, precision)
-
-            # Preserve reference price for later OrderFilled attribution
-            self.register_reference_price(client_order_id, un_slipped_px, slipped_px)
-
-            bid_order = BookOrder(
-                OrderSide.BUY,
-                Price(slipped_px, precision),
-                book_size,
-                1,
-            )
-            ask_order = BookOrder(
-                OrderSide.SELL,
-                best_ask,
-                book_size,
-                2,
-            )
-            book.apply_delta(
-                OrderBookDelta(instrument.id, BookAction.ADD, bid_order, 0, 1, 0, 0)
-            )
-            book.apply_delta(
-                OrderBookDelta(instrument.id, BookAction.ADD, ask_order, 0, 2, 0, 0)
-            )
+            bid_order = BookOrder(OrderSide.BUY, Price(slipped_px, precision), book_size, 1)
+            ask_order = BookOrder(OrderSide.SELL, best_ask, book_size, 2)
+            book.apply_delta(OrderBookDelta(instrument.id, BookAction.ADD, bid_order, 0, 1, 0, 0))
+            book.apply_delta(OrderBookDelta(instrument.id, BookAction.ADD, ask_order, 0, 2, 0, 0))
 
         return book
 
-    def record_fill(
-        self,
-        event: OrderFilled,
-        reference_price: Optional[float] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Records slippage attribution strictly from an authoritative OrderFilled event.
-        Correctly supports multiple partial fills for the same client_order_id.
 
-        Parameters:
-            event: The OrderFilled event from Nautilus.
-            reference_price: Optional explicit reference price override.
-
-        Returns:
-            Dict containing the itemised slippage record, or None if already recorded.
-        """
-        if self.recorder is not None:
-            return self.recorder.record_fill(event, reference_price=reference_price)
-
-        trade_id = str(event.trade_id)
-        if trade_id in self._recorded_trade_ids:
-            return None
-
-        self._recorded_trade_ids.add(trade_id)
-
-        cid = str(event.client_order_id)
-        ref_px = (
-            reference_price
-            if reference_price is not None and reference_price > 0.0
-            else self.get_reference_price(cid)
-        )
-
-        fill_px = float(event.last_px.as_double())
-        fill_qty = float(event.last_qty.as_double())
-        is_buy = bool(event.is_buy)
-
-        if ref_px is None or ref_px <= 0.0:
-            ref_px = fill_px
-
-        if is_buy:
-            slippage_per_share = round(max(0.0, fill_px - ref_px), 4)
-        else:
-            slippage_per_share = round(max(0.0, ref_px - fill_px), 4)
-
-        total_slippage_cost = round(fill_qty * slippage_per_share, 2)
-
-        ts_event = int(event.ts_event)
-        trading_date = (
-            pd.to_datetime(ts_event, unit="ns", utc=True)
-            .tz_convert(self.exchange_tz)
-            .date()
-        )
-
-        record = {
-            "trade_id": trade_id,
-            "client_order_id": cid,
-            "venue_order_id": str(getattr(event, "venue_order_id", "")),
-            "instrument_id": str(event.instrument_id),
-            "side": "BUY" if is_buy else "SELL",
-            "fill_quantity": fill_qty,
-            "fill_price": fill_px,
-            "reference_price": ref_px,
-            "slippage_per_share": slippage_per_share,
-            "total_slippage_cost": total_slippage_cost,
-            "ts_event": ts_event,
-            "date": trading_date,
-        }
-        self._slippage_records.append(record)
-
-        logger.debug(
-            "FILL RECORDED [Slippage]: %s %s trade_id=%s qty=%.2f px=%.2f ref_px=%.2f diff=%.4f cost=₹%.2f date=%s",
-            record["side"],
-            record["instrument_id"],
-            trade_id,
-            fill_qty,
-            fill_px,
-            ref_px,
-            slippage_per_share,
-            total_slippage_cost,
-            trading_date,
-        )
-        return record
-
-    @property
-    def slippage_records(self) -> List[Dict[str, Any]]:
-        """List of all audited slippage records from actual fills."""
-        if self.recorder is not None:
-            return self.recorder.slippage_records
-        return list(self._slippage_records)
-
-    @property
-    def fill_count(self) -> int:
-        """Total number of actual execution fills recorded."""
-        if self.recorder is not None:
-            return self.recorder.fill_count
-        return len(self._slippage_records)
-
-    @property
-    def total_slippage_cost(self) -> float:
-        """Total execution slippage cost incurred across all actual fills in INR."""
-        if self.recorder is not None:
-            return self.recorder.total_slippage_cost
-        return round(sum(r["total_slippage_cost"] for r in self._slippage_records), 2)
-
-    def to_dataframe(self) -> pd.DataFrame:
-        """Returns audited slippage fill records as a pandas DataFrame."""
-        if self.recorder is not None:
-            return self.recorder.to_dataframe()
-        return pd.DataFrame(self._slippage_records)
+# Backward-compatible alias
+AdverseSlippageFillModel = SlippageFillModel

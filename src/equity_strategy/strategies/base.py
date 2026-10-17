@@ -2,6 +2,7 @@ import logging
 from typing import Any, Dict, List, Optional, Sequence, Union
 import pandas as pd
 
+from nautilus_trader.execution import FeeModel, FillModel
 from nautilus_trader.model import (
     Bar,
     BarType,
@@ -12,15 +13,8 @@ from nautilus_trader.model import (
     QuoteTick,
     Venue,
 )
-from nautilus_trader.execution import FeeModel, FillModel
 from nautilus_trader.trading import Strategy, StrategyConfig
 
-from equity_strategy.execution import (
-    AdverseSlippageFillModel,
-    ExecutionCostReport,
-    ExecutionEventRecorder,
-    IndianEquityDeliveryFeeModel,
-)
 from equity_strategy.rebalancing.rebalancer import Rebalancer
 
 logger = logging.getLogger(__name__)
@@ -38,7 +32,6 @@ class BaseExecutionConfig(StrategyConfig):
         rebalancer: Optional execution Rebalancer instance.
         fee_model: Optional Nautilus FeeModel.
         fill_model: Optional Nautilus FillModel.
-        recorder: Optional ExecutionEventRecorder.
         exchange_tz: Exchange timezone identifier (default: 'Asia/Kolkata').
     """
 
@@ -51,11 +44,11 @@ class BaseExecutionConfig(StrategyConfig):
         rebalancer: Optional[Rebalancer] = None,
         fee_model: Optional[FeeModel] = None,
         fill_model: Optional[FillModel] = None,
-        recorder: Optional[ExecutionEventRecorder] = None,
         exchange_tz: str = "Asia/Kolkata",
+        recorder: Optional[Any] = None,
         **kwargs: Any,
     ) -> None:
-        super().__init__(**kwargs)
+        super().__init__()
         self.bar_types = bar_types
         self.all_trading_dates = list(all_trading_dates) if all_trading_dates is not None else []
         self.venue = venue
@@ -63,7 +56,6 @@ class BaseExecutionConfig(StrategyConfig):
         self.rebalancer = rebalancer
         self.fee_model = fee_model
         self.fill_model = fill_model
-        self.recorder = recorder
         self.exchange_tz = exchange_tz
 
 
@@ -75,12 +67,11 @@ class BaseExecutionStrategy(Strategy):
     Responsibilities:
     - Subscribes to universe daily bars (15:30 IST) and opening QuoteTicks (09:15 IST).
     - Initializes and wires the Rebalancer for direct native market order submission.
-    - Attaches engine clock and execution recorder to fee and fill/slippage models.
+    - Attaches engine clock to fee and fill models.
     - Coordinates event lifecycle:
         * on_bar: tracks latest close prices per instrument.
         * on_quote: handles market quotes for native matching.
-        * on_order_filled: reconciles fill events with fee and slippage models.
-        * on_stop: logs consolidated execution cost report.
+        * on_order_filled: links fill events with slippage and fee models.
     - Exposes direct rebalance execution for concrete strategies.
     """
 
@@ -94,11 +85,6 @@ class BaseExecutionStrategy(Strategy):
         self.rebalancer: Optional[Rebalancer] = getattr(config, "rebalancer", None)
         self.fee_model: Optional[FeeModel] = getattr(config, "fee_model", None)
         self.fill_model: Optional[FillModel] = getattr(config, "fill_model", None)
-        self.recorder: Optional[ExecutionEventRecorder] = (
-            getattr(config, "recorder", None)
-            or getattr(self.fee_model, "recorder", None)
-            or getattr(self.fill_model, "recorder", None)
-        )
         self.exchange_tz: str = getattr(config, "exchange_tz", "Asia/Kolkata")
 
         # Fast date-to-index lookup for calendar calculations
@@ -119,7 +105,7 @@ class BaseExecutionStrategy(Strategy):
         Nautilus lifecycle callback:
         - Subscribes to bars and opening quotes for all configured bar types.
         - Initializes and wires the Rebalancer to this strategy's execution environment.
-        - Wires engine clock and shared recorder to fee and fill models.
+        - Wires engine clock to fee and fill models.
         """
         for bar_type in self.bar_types:
             self.subscribe_bars(bar_type)
@@ -142,16 +128,11 @@ class BaseExecutionStrategy(Strategy):
             if self.rebalancer.base_currency is None:
                 self.rebalancer.base_currency = Currency.from_str(self.currency)
 
-        # Attach engine clock and shared recorder to execution cost models
+        # Attach engine simulation clock to fee and fill models
         if self.fee_model and hasattr(self.fee_model, "set_clock"):
             self.fee_model.set_clock(self.clock)
         if self.fill_model and hasattr(self.fill_model, "set_clock"):
             self.fill_model.set_clock(self.clock)
-        if self.recorder is not None:
-            if self.fee_model and hasattr(self.fee_model, "set_recorder"):
-                self.fee_model.set_recorder(self.recorder)
-            if self.fill_model and hasattr(self.fill_model, "set_recorder"):
-                self.fill_model.set_recorder(self.recorder)
 
         logger.info("BaseExecutionStrategy initialized and subscribed to universe.")
 
@@ -187,20 +168,8 @@ class BaseExecutionStrategy(Strategy):
             self.fee_model.on_order_filled(event)
 
     def on_stop(self) -> None:
-        """
-        Nautilus lifecycle callback when engine stops.
-        Logs the execution cost report.
-        """
-        if self.fee_model is not None or self.fill_model is not None:
-            cost_report = self.get_cost_report()
-            logger.info("\n%s", cost_report.to_text())
-
-    def get_cost_report(self) -> ExecutionCostReport:
-        """Returns the consolidated ExecutionCostReport for this strategy."""
-        return ExecutionCostReport(
-            fee_model=self.fee_model if isinstance(self.fee_model, IndianEquityDeliveryFeeModel) else None,
-            fill_model=self.fill_model if isinstance(self.fill_model, AdverseSlippageFillModel) else None,
-        )
+        """Nautilus lifecycle callback when engine stops."""
+        pass
 
     def rebalance(
         self,

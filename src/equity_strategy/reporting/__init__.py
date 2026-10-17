@@ -1,4 +1,3 @@
-from equity_strategy.reporting.cost_exporter import CostExporter
 from equity_strategy.reporting.market_data_exporter import MarketDataExporter
 from equity_strategy.reporting.nautilus_exporter import NautilusExporter
 from equity_strategy.reporting.run_store import RunStore
@@ -9,5 +8,4 @@ __all__ = [
     "NautilusExporter",
     "StrategyExporter",
     "MarketDataExporter",
-    "CostExporter",
 ]

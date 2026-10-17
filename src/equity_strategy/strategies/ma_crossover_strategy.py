@@ -43,7 +43,7 @@ class MACrossoverConfig(StrategyConfig):
         ] = None,
         **kwargs,
     ):
-        super().__init__(**kwargs)
+        super().__init__()
         self.bar_types = bar_types
         self.trade_size = (
             trade_size

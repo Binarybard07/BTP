@@ -1,8 +1,7 @@
 import datetime
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import logging
-import math
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -151,29 +150,26 @@ class DPChargesConfig:
 
 class DPChargesTracker:
     """
-    Manages DP charges with daily per-ISIN debit frequency tracking.
+    Manages DP charges with daily per-security/ISIN debit frequency tracking.
 
     Rules:
-    - Triggers only when a delivery sell causes shares of an ISIN to be debited.
-    - Charged at most once per ISIN per trading day, regardless of multiple orders or fills.
-    - Zero charge for buys.
-    - Operates under the strategy's cash-delivery assumption.
+    - Triggers strictly on delivery sells (never on buys).
+    - Charged at most once per security/ISIN per trading day, regardless of multiple orders or fills.
+    - Zero charge for buys or subsequent sells of the same security on the same day.
     """
 
     def __init__(self, config: Optional[DPChargesConfig] = None):
         self.config = config or DPChargesConfig()
-        # Mapping: date -> set of debited ISIN/symbols for that date
-        self._debited_isins_by_date: Dict[datetime.date, Set[str]] = {}
-        self._dp_charge_records: List[Dict[str, Any]] = []
+        # Mapping: date -> set of debited security identifiers (ISIN or symbol) for that date
+        self._debited_by_date: Dict[datetime.date, Set[str]] = {}
 
     def reset(self) -> None:
         """Clears all tracking state."""
-        self._debited_isins_by_date.clear()
-        self._dp_charge_records.clear()
+        self._debited_by_date.clear()
 
     def evaluate_dp_charge(
         self,
-        isin_symbol: str,
+        security_id: str,
         trading_date: datetime.date,
         is_sell: bool,
         fill_quantity: float,
@@ -182,63 +178,40 @@ class DPChargesTracker:
         Determines DP charge for a given fill.
 
         Parameters:
-            isin_symbol: Symbol or ISIN identifier for the equity instrument.
-            trading_date: Trading session date (calendar date in IST).
+            security_id: ISIN or symbol identifier for the equity instrument.
+            trading_date: Trading session date (calendar date in exchange timezone).
             is_sell: True if fill is for a SELL order, False for BUY.
             fill_quantity: Executed fill quantity.
 
         Returns:
-            float: ₹15.34 if this is the first qualifying delivery sell of the ISIN on trading_date,
-                   0.0 otherwise (buys, or subsequent sells of the same ISIN on the same day).
+            float: ₹15.34 if this is the first qualifying delivery sell of the security on trading_date,
+                   0.0 otherwise.
         """
         if not is_sell or fill_quantity <= 0:
             return 0.0
 
-        if trading_date not in self._debited_isins_by_date:
-            self._debited_isins_by_date[trading_date] = set()
+        if trading_date not in self._debited_by_date:
+            self._debited_by_date[trading_date] = set()
 
-        clean_symbol = isin_symbol.strip().upper()
-        if clean_symbol in self._debited_isins_by_date[trading_date]:
-            # Already charged today for this ISIN -> charge at most once per trading day
+        clean_id = str(security_id).strip().upper()
+        if clean_id in self._debited_by_date[trading_date]:
+            # Already debited today for this security -> at most once per trading day
             logger.debug(
-                "DP charge skipped for %s on %s: already charged for this ISIN today",
-                clean_symbol,
+                "DP charge skipped for %s on %s: already charged today",
+                clean_id,
                 trading_date,
             )
             return 0.0
 
-        # First qualifying sell of this ISIN on this trading day
-        self._debited_isins_by_date[trading_date].add(clean_symbol)
+        # First qualifying delivery sell of this security on this trading day
+        self._debited_by_date[trading_date].add(clean_id)
         charge = self.config.total_dp_charge
 
-        taxable = round(self.config.broker_component + self.config.depository_component, 2)
-        gst = round(taxable * self.config.gst_pct, 2)
-
-        self._dp_charge_records.append({
-            "date": trading_date,
-            "symbol": clean_symbol,
-            "fill_quantity": fill_quantity,
-            "broker_component": self.config.broker_component,
-            "depository_component": self.config.depository_component,
-            "gst": gst,
-            "total_dp_charge": charge,
-        })
-
         logger.info(
-            "DP CHARGE APPLIED: ₹%.2f on %s for ISIN %s (First delivery sell of day, qty=%.2f)",
+            "DP CHARGE APPLIED: INR %.2f on %s for %s (First delivery sell of day, qty=%.2f)",
             charge,
             trading_date,
-            clean_symbol,
+            clean_id,
             fill_quantity,
         )
         return charge
-
-    @property
-    def total_dp_charges_incurred(self) -> float:
-        """Total DP charges incurred across all tracked sessions."""
-        return sum(rec["total_dp_charge"] for rec in self._dp_charge_records)
-
-    @property
-    def records(self) -> List[Dict[str, Any]]:
-        """List of all DP charge event records."""
-        return list(self._dp_charge_records)

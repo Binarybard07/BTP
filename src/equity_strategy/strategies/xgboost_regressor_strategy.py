@@ -35,8 +35,6 @@ from equity_strategy.execution import (
     AdverseSlippageConfig,
     AdverseSlippageFillModel,
     DPChargesConfig,
-    ExecutionCostReport,
-    ExecutionEventRecorder,
     IndianEquityDeliveryFeeModel,
     OrdinaryChargesConfig,
 )
@@ -57,7 +55,6 @@ from equity_strategy.rebalancing.base import BaseRebalanceStrategy
 from equity_strategy.rebalancing.monthly import MonthlyRebalanceStrategy
 from equity_strategy.rebalancing.rebalancer import Rebalancer
 from equity_strategy.reporting import (
-    CostExporter,
     MarketDataExporter,
     NautilusExporter,
     RunStore,
@@ -117,7 +114,7 @@ class XGBoostRegressorConfig(BaseExecutionConfig):
         currency: str = "INR",
         fee_model: Optional[FeeModel] = None,
         fill_model: Optional[FillModel] = None,
-        recorder: Optional[ExecutionEventRecorder] = None,
+        recorder: Optional[Any] = None,
         ordinary_charges_config: Optional[OrdinaryChargesConfig] = None,
         dp_charges_config: Optional[DPChargesConfig] = None,
         slippage_pct: float = 0.0005,
@@ -494,18 +491,12 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
         )
         engine = BacktestEngine(config=cfg)
 
-        # Instantiate ExecutionEventRecorder to coordinate fill timestamps and reference prices
-        recorder = ExecutionEventRecorder(exchange_tz="Asia/Kolkata")
-
         active_fee_model = fee_model
         if active_fee_model is None:
             active_fee_model = IndianEquityDeliveryFeeModel(
                 ordinary_config=ordinary_charges_config,
                 dp_config=dp_charges_config,
-                recorder=recorder,
             )
-        elif hasattr(active_fee_model, "set_recorder") and getattr(active_fee_model, "recorder", None) is None:
-            active_fee_model.set_recorder(recorder)
 
         active_fill_model = fill_model
         if active_fill_model is None:
@@ -514,10 +505,7 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
                     slippage_pct=slippage_pct,
                     enabled=enable_slippage,
                 ),
-                recorder=recorder,
             )
-        elif hasattr(active_fill_model, "set_recorder") and getattr(active_fill_model, "recorder", None) is None:
-            active_fill_model.set_recorder(recorder)
 
         engine.add_venue(
             venue=Venue(venue),
@@ -659,7 +647,6 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
             currency=currency,
             fee_model=active_fee_model,
             fill_model=active_fill_model,
-            recorder=recorder,
             ordinary_charges_config=ordinary_charges_config,
             dp_charges_config=dp_charges_config,
             slippage_pct=slippage_pct,
@@ -711,12 +698,6 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
             )
             StrategyExporter.export(
                 strategy=strategy,
-                run_dir=run_dir,
-            )
-            CostExporter.export(
-                cost_report=strategy.get_cost_report(),
-                fee_model=active_fee_model if isinstance(active_fee_model, IndianEquityDeliveryFeeModel) else None,
-                recorder=recorder,
                 run_dir=run_dir,
             )
             run_store.complete_metadata()
