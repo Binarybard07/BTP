@@ -15,6 +15,8 @@ from nautilus_trader.model import (
 from nautilus_trader.portfolio import Portfolio
 from nautilus_trader.trading import Strategy
 
+from equity_strategy.risk_management.base import BaseRiskManager
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,6 +42,7 @@ class Rebalancer:
         submit_order: Optional[Callable[[MarketOrder], None]] = None,
         default_venue: Optional[Union[Venue, str]] = None,
         base_currency: Optional[Union[Currency, str]] = None,
+        risk_manager: Optional[BaseRiskManager] = None,
     ):
         self.strategy = strategy
         self.portfolio: Optional[Portfolio] = (
@@ -61,6 +64,7 @@ class Rebalancer:
         self.base_currency: Optional[Currency] = (
             Currency.from_str(base_currency) if isinstance(base_currency, str) else base_currency
         )
+        self.risk_manager: Optional[BaseRiskManager] = risk_manager
 
         self._auto_infer_venue_and_currency()
 
@@ -214,14 +218,17 @@ class Rebalancer:
         if total_weight > 1.0001:
             raise ValueError(f"Sum of target weights ({total_weight:.4f}) exceeds 100%.")
 
-        # 2. Retrieve current equity
+        # 2. Retrieve current equity and calculate deployment budget
         current_equity = self.get_current_equity()
         if current_equity <= 0.0:
             raise ValueError(f"Portfolio equity must be positive to size positions, got {current_equity:.2f}")
 
+        deployment_budget = self.risk_manager.calculate_deployment_budget(current_equity)
+
         logger.info(
-            "Starting rebalance: Portfolio Equity=%.2f, Target Holdings=%d, Total Weight=%.4f",
+            "Starting rebalance: Portfolio Equity=%.2f, Deployment Budget=%.2f, Target Holdings=%d, Total Weight=%.4f",
             current_equity,
+            deployment_budget,
             len(normalized_weights),
             total_weight,
         )
@@ -262,7 +269,7 @@ class Rebalancer:
         for inst_id, weight in normalized_weights.items():
             instrument = self._get_instrument(inst_id, custom_map=inst_map)
             current_qty = float(self.portfolio.net_position(inst_id))
-            target_value = current_equity * weight
+            target_value = deployment_budget * weight
             price = normalized_prices.get(inst_id, 0.0)
 
             target_qty = (target_value / price) if price > 0.0 else 0.0

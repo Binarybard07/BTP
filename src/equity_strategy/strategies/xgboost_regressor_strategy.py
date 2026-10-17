@@ -7,28 +7,20 @@ from nautilus_trader.config import FileWriterConfig, LoggerConfig, PortfolioConf
 from nautilus_trader.model import TraderId
 import pandas as pd
 from equity_strategy.logging_config import configure_logging
-
-from nautilus_trader.analysis import create_tearsheet
 from nautilus_trader.backtest import BacktestEngine, BacktestEngineConfig
 from nautilus_trader.model import (
     AccountType,
     Bar,
     BarType,
-    ClientOrderId,
     Currency,
-    Equity,
     InstrumentId,
     Money,
     OmsType,
     OrderFilled,
-    OrderSide,
-    Price,
-    Quantity,
     QuoteTick,
     Venue,
 )
 from nautilus_trader.execution import FeeModel, FillModel, StaticLatencyModel
-from nautilus_trader.trading import Strategy, StrategyConfig
 
 from equity_strategy.strategies.base import BaseExecutionConfig, BaseExecutionStrategy
 from equity_strategy.execution import (
@@ -38,15 +30,12 @@ from equity_strategy.execution import (
     IndianEquityDeliveryFeeModel,
     OrdinaryChargesConfig,
 )
-from equity_strategy.data.loader import CSVDataLoader
-from equity_strategy.data.nautilus_data import NautilusDataConverter
 from equity_strategy.data.strategy_data import StrategyDataPipeline
 from equity_strategy.data.training_dataset import (
     TrainingDatasetBuilder,
     FEATURE_COLUMNS,
     TARGET_COLUMN,
 )
-from equity_strategy.features.engine import FeatureEngine
 from equity_strategy.models.base import BaseModel
 from equity_strategy.models.xgboost_regressor import XGBoostRegressor
 from equity_strategy.portfolio.base import BasePortfolio
@@ -54,6 +43,7 @@ from equity_strategy.portfolio.equal_weight import EqualWeightPortfolio
 from equity_strategy.rebalancing.base import BaseRebalanceStrategy
 from equity_strategy.rebalancing.monthly import MonthlyRebalanceStrategy
 from equity_strategy.rebalancing.rebalancer import Rebalancer
+from equity_strategy.risk_management import FixedPercentageRiskManager
 from equity_strategy.reporting import (
     MarketDataExporter,
     NautilusExporter,
@@ -63,7 +53,6 @@ from equity_strategy.reporting import (
 from equity_strategy.selection.base import BaseSelector
 from equity_strategy.selection.top_n import TopNSelector
 from equity_strategy.selection.percentile import PercentileSelector
-from equity_strategy.targets import engine
 from equity_strategy.targets.engine import TargetEngine
 
 logger = logging.getLogger(__name__)
@@ -84,6 +73,7 @@ class XGBoostRegressorConfig(BaseExecutionConfig):
         target_column: Target column name (default: 'target_10d').
         min_train_days: Minimum historical trading days before first rebalance (default: 252).
         top_n: Number of top-ranked stocks to select (default: 20).
+        max_deployment_pct: Fraction of portfolio equity to deploy (default: 1.0 = 100%).
         model: Swappable ML regressor prototype adhering to BaseModel.
         selector: Swappable stock selector adhering to BaseSelector.
         portfolio: Swappable portfolio constructor adhering to BasePortfolio.
@@ -104,7 +94,7 @@ class XGBoostRegressorConfig(BaseExecutionConfig):
         target_horizon: int = 10,
         target_column: str = TARGET_COLUMN,
         min_train_days: int = 252,
-        top_n: int = 20,
+        max_deployment_pct: float = 1.0,
         model: Optional[BaseModel] = None,
         selector: Optional[BaseSelector] = None,
         portfolio: Optional[BasePortfolio] = None,
@@ -117,40 +107,48 @@ class XGBoostRegressorConfig(BaseExecutionConfig):
         recorder: Optional[Any] = None,
         ordinary_charges_config: Optional[OrdinaryChargesConfig] = None,
         dp_charges_config: Optional[DPChargesConfig] = None,
-        slippage_pct: float = 0.0005,
-        enable_slippage: bool = True,
+        slippage_pct: float = SlippageConfig.slippage_pct,
+        enable_slippage: bool = SlippageConfig.enabled,
         exchange_tz: str = "Asia/Kolkata",
         **kwargs: Any,
     ):
         super().__init__(
             bar_types=bar_types,
-            all_trading_dates=all_trading_dates,
             venue=venue,
             currency=currency,
-            rebalancer=rebalancer,
-            fee_model=fee_model,
-            fill_model=fill_model,
-            recorder=recorder,
             exchange_tz=exchange_tz,
             **kwargs,
         )
         self.featured_df = featured_df
         self.training_df = training_df
+        self.all_trading_dates = list(all_trading_dates) if all_trading_dates is not None else []
         self.instruments_by_date = instruments_by_date or {}
         self.feature_columns = list(feature_columns or FEATURE_COLUMNS)
         self.target_horizon = target_horizon
         self.target_column = target_column
         self.min_train_days = min_train_days
-        self.top_n = top_n
-        self.percentile = 85.0
+        self.max_deployment_pct = max_deployment_pct
         self.model = model or XGBoostRegressor()
-        self.selector = selector or PercentileSelector(percentile=self.percentile)
+        if selector is not None:
+            self.selector = selector
+        elif "percentile" in kwargs:
+            self.selector = PercentileSelector(percentile=kwargs["percentile"])
+        elif "top_n" in kwargs:
+            self.selector = TopNSelector(n=kwargs["top_n"])
+        else:
+            self.selector = TopNSelector()
+
         self.portfolio = portfolio or EqualWeightPortfolio()
         self.rebalance_strategy = rebalance_strategy or MonthlyRebalanceStrategy()
+        self.rebalancer = rebalancer
+        self.fee_model = fee_model
+        self.fill_model = fill_model
+        self.recorder = recorder
         self.ordinary_charges_config = ordinary_charges_config
         self.dp_charges_config = dp_charges_config
         self.slippage_pct = slippage_pct
         self.enable_slippage = enable_slippage
+        self.extra_kwargs = kwargs
 
 
 class XGBoostRegressorStrategy(BaseExecutionStrategy):
@@ -186,15 +184,30 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
         self.instruments_by_date: Dict[pd.Timestamp, Set[InstrumentId]] = (
             config.instruments_by_date
         )
+        self.all_trading_dates: List[pd.Timestamp] = config.all_trading_dates
+        self.date_to_index: Dict[pd.Timestamp, int] = {
+            d: i for i, d in enumerate(self.all_trading_dates)
+        }
+        self._symbol_to_instrument_id: Dict[str, InstrumentId] = {
+            str(bt.instrument_id.symbol).upper(): bt.instrument_id for bt in self.bar_types
+        }
+        self._latest_prices: Dict[InstrumentId, float] = {}
+
         self.feature_columns: List[str] = config.feature_columns
         self.target_horizon: int = config.target_horizon
         self.target_column: str = config.target_column
         self.min_train_days: int = config.min_train_days
-        self.top_n: int = config.top_n
+        self.top_n: Optional[int] = getattr(config, "top_n", None)
         self.model_prototype: BaseModel = config.model
         self.selector: BaseSelector = config.selector
         self.portfolio_constructor: BasePortfolio = config.portfolio
         self.rebalance_strategy: BaseRebalanceStrategy = config.rebalance_strategy
+        self.rebalancer: Optional[Rebalancer] = config.rebalancer
+        self.fee_model: Optional[FeeModel] = config.fee_model
+        self.fill_model: Optional[FillModel] = config.fill_model
+        self.risk_manager = FixedPercentageRiskManager(
+            max_deployment_pct=config.max_deployment_pct
+        )
 
         # Session tracking for multi-instrument bar collection
         self._session_reported_bars: Dict[pd.Timestamp, Set[InstrumentId]] = {}
@@ -216,23 +229,57 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
         wires Rebalancer, and resets the MonthlyRebalanceStrategy.
         """
         super().on_start()
+
+        # Subscribe to opening quotes for T+1 open execution / month transition detection
+        for bar_type in self.bar_types:
+            self.subscribe_quotes(bar_type.instrument_id)
+
+        # Wire execution rebalancer
+        if self.rebalancer is None:
+            self.rebalancer = Rebalancer(
+                strategy=self,
+                default_venue=self.venue,
+                base_currency=self.currency,
+                risk_manager=self.risk_manager,
+            )
+        else:
+            self.rebalancer.strategy = self
+            if self.rebalancer.risk_manager is None:
+                self.rebalancer.risk_manager = self.risk_manager
+
+        # Attach engine simulation clock to fee and fill models
+        if self.fee_model and hasattr(self.fee_model, "set_clock"):
+            self.fee_model.set_clock(self.clock)
+        if self.fill_model and hasattr(self.fill_model, "set_clock"):
+            self.fill_model.set_clock(self.clock)
+
         self.rebalance_strategy.reset()
         logger.info(
             "XGBoostRegressorStrategy started with %d instruments.", len(self.bar_types)
         )
 
+    def on_order_filled(self, event: OrderFilled) -> None:
+        """
+        Nautilus lifecycle callback when an order fill event is received.
+        Delegates fill reconciliation to fee and slippage models.
+        """
+        if self.fill_model and hasattr(self.fill_model, "record_fill"):
+            self.fill_model.record_fill(event)
+        if self.fee_model and hasattr(self.fee_model, "on_order_filled"):
+            self.fee_model.on_order_filled(event)
+
     def on_bar(self, bar: Bar) -> None:
         """
         Nautilus lifecycle callback for daily closing bars (15:30 IST):
-        1. Tracks latest close price for the incoming instrument (via base class).
+        1. Tracks latest close price for the incoming instrument.
         2. Tracks bars reporting in the current session.
         3. Once all expected instruments have reported their session T bars, checks
            whether session T is the final trading session of the calendar month (T close).
         4. If session T is month-end, executes the lookahead-free rebalance directly through
            the Rebalancer, submitting native Nautilus market orders.
         """
-        super().on_bar(bar)
         inst_id = bar.bar_type.instrument_id
+        self._latest_prices[inst_id] = float(bar.close.as_double())
         bar_date = self.extract_session_date(bar)
 
         if bar_date not in self._session_reported_bars:
@@ -260,7 +307,6 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
         Nautilus lifecycle callback for opening QuoteTicks (09:15 IST):
         Evaluates causal monthly scheduler fallback if rebalance was not triggered at T close.
         """
-        super().on_quote(quote)
         decision_date = self.rebalance_strategy.step(quote)
         if (
             decision_date is not None
@@ -418,13 +464,13 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
         target_horizon: int = 10,
         target_column: str = TARGET_COLUMN,
         min_train_days: int = 252,
-        top_n: int = 20,
+        max_deployment_pct: float = 1.0,
         fee_model: Optional[FeeModel] = None,
         fill_model: Optional[FillModel] = None,
         ordinary_charges_config: Optional[OrdinaryChargesConfig] = None,
         dp_charges_config: Optional[DPChargesConfig] = None,
-        slippage_pct: float = 0.0005,
-        enable_slippage: bool = True,
+        slippage_pct: float = SlippageConfig.slippage_pct,
+        enable_slippage: bool = SlippageConfig.enabled,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         unique_id: str = "001",
@@ -491,19 +537,27 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
         )
         engine = BacktestEngine(config=cfg)
 
-        active_fee_model = fee_model
+        if config is not None:
+            venue = config.venue
+            currency = config.currency
+            target_horizon = config.target_horizon
+            target_column = config.target_column
+            if config.feature_columns:
+                feature_columns = config.feature_columns
+
+        active_fee_model = fee_model or (config.fee_model if config is not None else None)
         if active_fee_model is None:
             active_fee_model = IndianEquityDeliveryFeeModel(
-                ordinary_config=ordinary_charges_config,
-                dp_config=dp_charges_config,
+                ordinary_config=ordinary_charges_config or (config.ordinary_charges_config if config is not None else None),
+                dp_config=dp_charges_config or (config.dp_charges_config if config is not None else None),
             )
 
-        active_fill_model = fill_model
+        active_fill_model = fill_model or (config.fill_model if config is not None else None)
         if active_fill_model is None:
             active_fill_model = SlippageFillModel(
                 config=SlippageConfig(
-                    slippage_pct=slippage_pct,
-                    enabled=enable_slippage,
+                    slippage_pct=config.slippage_pct if config is not None else slippage_pct,
+                    enabled=config.enable_slippage if config is not None else enable_slippage,
                 ),
             )
 
@@ -611,48 +665,71 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
                 for s in grp["Symbol"]
             }
 
+        if config is not None:
+            strat_config = config
+            if not strat_config.bar_types:
+                strat_config.bar_types = bar_types
+            if strat_config.featured_df is None or strat_config.featured_df.empty:
+                strat_config.featured_df = combined_featured_df
+            if strat_config.training_df is None or strat_config.training_df.empty:
+                strat_config.training_df = training_df
+            if not strat_config.all_trading_dates:
+                strat_config.all_trading_dates = all_trading_dates
+            if not strat_config.instruments_by_date:
+                strat_config.instruments_by_date = instruments_by_date
+        else:
+            strat_config = XGBoostRegressorConfig(
+                bar_types=bar_types,
+                featured_df=combined_featured_df,
+                training_df=training_df,
+                all_trading_dates=all_trading_dates,
+                instruments_by_date=instruments_by_date,
+                feature_columns=f_cols,
+                target_horizon=target_horizon,
+                target_column=target_column,
+                min_train_days=min_train_days,
+                max_deployment_pct=max_deployment_pct,
+                venue=venue,
+                currency=currency,
+                fee_model=active_fee_model,
+                fill_model=active_fill_model,
+                ordinary_charges_config=ordinary_charges_config,
+                dp_charges_config=dp_charges_config,
+                slippage_pct=slippage_pct,
+                enable_slippage=enable_slippage,
+                **kwargs,
+            )
+
         # Initialize metadata manifest
         loaded_symbols = [str(bt.instrument_id.symbol) for bt in bar_types]
         config_summary = {
             "data_source": str(data_source),
             "symbol": symbol,
             "starting_balance": starting_balance,
-            "venue": venue,
-            "currency": currency,
-            "target_horizon": target_horizon,
-            "target_column": target_column,
-            "min_train_days": min_train_days,
-            "top_n": top_n,
+            "venue": strat_config.venue,
+            "currency": strat_config.currency,
+            "target_horizon": strat_config.target_horizon,
+            "target_column": strat_config.target_column,
+            "min_train_days": strat_config.min_train_days,
             "start_date": start_date,
             "end_date": end_date,
-            "enable_slippage": enable_slippage,
-            "slippage_pct": slippage_pct,
+            "enable_slippage": getattr(strat_config, "enable_slippage", enable_slippage),
+            "slippage_pct": getattr(strat_config, "slippage_pct", slippage_pct),
+            "max_deployment_pct": strat_config.max_deployment_pct,
+            "selector": type(strat_config.selector).__name__,
         }
+        if hasattr(strat_config.selector, "n"):
+            config_summary["top_n"] = strat_config.selector.n
+        elif hasattr(strat_config, "top_n") and strat_config.top_n is not None:
+            config_summary["top_n"] = strat_config.top_n
+        if hasattr(strat_config.selector, "percentile"):
+            config_summary["percentile"] = strat_config.selector.percentile
+        elif hasattr(strat_config, "percentile") and strat_config.percentile is not None:
+            config_summary["percentile"] = strat_config.percentile
         run_store.init_metadata(symbols=loaded_symbols, config=config_summary)
 
         engine.sort_data()
 
-        strat_config = config or XGBoostRegressorConfig(
-            bar_types=bar_types,
-            featured_df=combined_featured_df,
-            training_df=training_df,
-            all_trading_dates=all_trading_dates,
-            instruments_by_date=instruments_by_date,
-            feature_columns=f_cols,
-            target_horizon=target_horizon,
-            target_column=target_column,
-            min_train_days=min_train_days,
-            top_n=top_n,
-            venue=venue,
-            currency=currency,
-            fee_model=active_fee_model,
-            fill_model=active_fill_model,
-            ordinary_charges_config=ordinary_charges_config,
-            dp_charges_config=dp_charges_config,
-            slippage_pct=slippage_pct,
-            enable_slippage=enable_slippage,
-            **kwargs,
-        )
         strategy = cls(config=strat_config)
         engine.add_strategy(strategy)
 
@@ -717,10 +794,11 @@ if __name__ == "__main__":
     engine = XGBoostRegressorStrategy.run(
         data_source=f"data/raw/{data_source}",
         starting_balance=10_000_00.0,
-        top_n=20,
-        min_train_days=252,
+        min_train_days=252*4,
         unique_id=unique_id,
-        start_date="2024-01-01",
+        start_date="2014-01-01",
+        max_deployment_pct=0.75,
+        percentile=85
     )
 
     logger.info("=== Multi-Instrument XGBoost Regressor Backtest Completed: %s ===", unique_id)
