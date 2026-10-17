@@ -154,7 +154,7 @@ class SpreadSlippage(SlippageMethod):
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
-class AdverseSlippageConfig:
+class SlippageConfig:
     """
     Configuration parameters for execution slippage simulation.
 
@@ -191,7 +191,7 @@ class SlippageFillModel(FillModel):
         self,
         method: Optional[SlippageMethod] = None,
         *,
-        config: Optional[AdverseSlippageConfig] = None,
+        config: Optional[SlippageConfig] = None,
         slippage_pct: Optional[float] = None,
         **kwargs: Any,
     ) -> None:

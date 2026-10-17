@@ -32,8 +32,8 @@ from nautilus_trader.trading import Strategy, StrategyConfig
 
 from equity_strategy.strategies.base import BaseExecutionConfig, BaseExecutionStrategy
 from equity_strategy.execution import (
-    AdverseSlippageConfig,
-    AdverseSlippageFillModel,
+    SlippageConfig,
+    SlippageFillModel,
     DPChargesConfig,
     IndianEquityDeliveryFeeModel,
     OrdinaryChargesConfig,
@@ -500,8 +500,8 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
 
         active_fill_model = fill_model
         if active_fill_model is None:
-            active_fill_model = AdverseSlippageFillModel(
-                config=AdverseSlippageConfig(
+            active_fill_model = SlippageFillModel(
+                config=SlippageConfig(
                     slippage_pct=slippage_pct,
                     enabled=enable_slippage,
                 ),
