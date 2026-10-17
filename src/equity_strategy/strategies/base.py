@@ -7,6 +7,7 @@ from nautilus_trader.model import (
     BarType,
     Currency,
     InstrumentId,
+    MarketOrder,
     OrderFilled,
     QuoteTick,
     Venue,
@@ -19,17 +20,15 @@ from equity_strategy.execution import (
     ExecutionCostReport,
     ExecutionEventRecorder,
     IndianEquityDeliveryFeeModel,
-    T1OpenExecution,
 )
-from equity_strategy.execution.t1_open import QueuedOrder
-from equity_strategy.rebalancing.rebalancer import RebalancePlan, Rebalancer
+from equity_strategy.rebalancing.rebalancer import Rebalancer
 
 logger = logging.getLogger(__name__)
 
 
 class BaseExecutionConfig(StrategyConfig):
     """
-    Configuration for strategies running on NautilusTrader with T+1 Open execution.
+    Configuration for strategies running on NautilusTrader with direct execution.
 
     Parameters:
         bar_types: List of Nautilus BarType subscriptions for the active universe.
@@ -71,19 +70,18 @@ class BaseExecutionConfig(StrategyConfig):
 class BaseExecutionStrategy(Strategy):
     """
     Reusable base NautilusTrader strategy for equity portfolio rebalancing
-    with T+1 opening execution and execution cost model integration.
+    with native Nautilus order execution, cost modeling, and fill reconciliation.
 
     Responsibilities:
-    - Initializes and manages the T1OpenExecution coordinator and Rebalancer.
-    - Manages subscriptions to daily bars and opening QuoteTicks for active instruments.
-    - Attaches engine clock and execution recorder to fee and slippage models.
+    - Subscribes to universe daily bars (15:30 IST) and opening QuoteTicks (09:15 IST).
+    - Initializes and wires the Rebalancer for direct native market order submission.
+    - Attaches engine clock and execution recorder to fee and fill/slippage models.
     - Coordinates event lifecycle:
-        * on_quote: releases queued T+1 orders on opening quotes.
+        * on_bar: tracks latest close prices per instrument.
+        * on_quote: handles market quotes for native matching.
         * on_order_filled: reconciles fill events with fee and slippage models.
-        * on_stop: cleans up remaining pending orders and logs cost reports.
-    - Exposes simple rebalance queueing methods for concrete strategies:
-        * queue_rebalance_plan(plan): queues an existing RebalancePlan.
-        * plan_and_queue_rebalance(target_weights, ...): generates a plan via Rebalancer and queues it.
+        * on_stop: logs consolidated execution cost report.
+    - Exposes direct rebalance execution for concrete strategies.
     """
 
     def __init__(self, config: StrategyConfig) -> None:
@@ -116,24 +114,12 @@ class BaseExecutionStrategy(Strategy):
         # Market state tracking: latest close price per instrument
         self._latest_prices: Dict[InstrumentId, float] = {}
 
-        # Reusable T+1 opening execution coordinator
-        self.t1_execution: T1OpenExecution = T1OpenExecution(
-            strategy=self,
-            rebalancer=self.rebalancer,
-            trading_dates=self.all_trading_dates,
-            recorder=self.recorder,
-            fee_model=self.fee_model,
-            fill_model=self.fill_model,
-            exchange_tz=self.exchange_tz,
-        )
-
     def on_start(self) -> None:
         """
         Nautilus lifecycle callback:
         - Subscribes to bars and opening quotes for all configured bar types.
         - Initializes and wires the Rebalancer to this strategy's execution environment.
         - Wires engine clock and shared recorder to fee and fill models.
-        - Synchronizes T1OpenExecution coordinator with Rebalancer and models.
         """
         for bar_type in self.bar_types:
             self.subscribe_bars(bar_type)
@@ -167,19 +153,15 @@ class BaseExecutionStrategy(Strategy):
             if self.fill_model and hasattr(self.fill_model, "set_recorder"):
                 self.fill_model.set_recorder(self.recorder)
 
-        # Wire T1OpenExecution coordinator
-        self.t1_execution.rebalancer = self.rebalancer
-        self.t1_execution.recorder = self.recorder
-        self.t1_execution.fee_model = self.fee_model
-        self.t1_execution.fill_model = self.fill_model
-        if not self.t1_execution.trading_dates and self.all_trading_dates:
-            self.t1_execution.set_trading_dates(self.all_trading_dates)
-
         logger.info("BaseExecutionStrategy initialized and subscribed to universe.")
 
     def extract_session_date(self, item: Any) -> pd.Timestamp:
         """Normalizes a Nautilus Bar or QuoteTick timestamp to calendar session Timestamp."""
-        return self.t1_execution.extract_session_date(item)
+        if hasattr(item, "ts_init") or hasattr(item, "ts_event"):
+            ts = getattr(item, "ts_init", None) or getattr(item, "ts_event")
+            dt = pd.to_datetime(ts, unit="ns", utc=True).tz_convert(self.exchange_tz)
+            return pd.Timestamp(dt.date())
+        return pd.Timestamp(pd.to_datetime(item).date())
 
     def _extract_date(self, item: Any) -> pd.Timestamp:
         """Compatibility alias for extract_session_date."""
@@ -191,25 +173,24 @@ class BaseExecutionStrategy(Strategy):
         self._latest_prices[inst_id] = float(bar.close.as_double())
 
     def on_quote(self, quote: QuoteTick) -> None:
-        """
-        Nautilus lifecycle callback for opening QuoteTicks (09:15 IST):
-        Delegates T+1 opening execution release to the T1OpenExecution coordinator.
-        """
-        self.t1_execution.on_quote(quote)
+        """Nautilus lifecycle callback for opening QuoteTicks (09:15 IST)."""
+        pass
 
     def on_order_filled(self, event: OrderFilled) -> None:
         """
         Nautilus lifecycle callback when an order fill event is received.
-        Delegates fill reconciliation and fee tracking to T1OpenExecution.
+        Delegates fill reconciliation to fee and slippage models.
         """
-        self.t1_execution.on_order_filled(event)
+        if self.fill_model and hasattr(self.fill_model, "record_fill"):
+            self.fill_model.record_fill(event)
+        if self.fee_model and hasattr(self.fee_model, "on_order_filled"):
+            self.fee_model.on_order_filled(event)
 
     def on_stop(self) -> None:
         """
         Nautilus lifecycle callback when engine stops.
-        Cleans up unreleased pending orders and logs the execution cost report.
+        Logs the execution cost report.
         """
-        self.t1_execution.on_stop()
         if self.fee_model is not None or self.fill_model is not None:
             cost_report = self.get_cost_report()
             logger.info("\n%s", cost_report.to_text())
@@ -221,50 +202,29 @@ class BaseExecutionStrategy(Strategy):
             fill_model=self.fill_model if isinstance(self.fill_model, AdverseSlippageFillModel) else None,
         )
 
-    def has_pending_orders(self) -> bool:
-        """Returns True if there are queued orders awaiting opening quotes."""
-        return self.t1_execution.has_pending_orders()
-
-    def queue_rebalance_plan(
-        self,
-        plan: RebalancePlan,
-        execution_session: Optional[pd.Timestamp] = None,
-    ) -> List[QueuedOrder]:
-        """
-        Queues all planned order instructions in a RebalancePlan for T+1 opening execution.
-        """
-        return self.t1_execution.queue_plan(plan, execution_session=execution_session)
-
-    def plan_and_queue_rebalance(
+    def rebalance(
         self,
         target_weights: Dict[Union[InstrumentId, str], float],
-        reference_prices: Optional[Dict[Union[InstrumentId, str], float]] = None,
-        decision_date: Optional[pd.Timestamp] = None,
-        execution_session: Optional[pd.Timestamp] = None,
-    ) -> RebalancePlan:
+        current_prices: Optional[Dict[Union[InstrumentId, str], float]] = None,
+        *,
+        instruments: Optional[Dict[Union[InstrumentId, str], Any]] = None,
+    ) -> List[MarketOrder]:
         """
-        Plans a portfolio rebalance using the Rebalancer and queues it for T+1 opening execution.
-
-        Parameters:
-            target_weights: Target portfolio weights keyed by InstrumentId or symbol string.
-            reference_prices: Session T close prices for order sizing (defaults to latest observed prices).
-            decision_date: Session date T when the rebalance decision is made.
-            execution_session: Optional explicit target session T+1 (defaults to next trading calendar date).
+        Executes a portfolio rebalance directly through the Rebalancer.
+        Calculates required quantities and submits native Nautilus market orders directly.
         """
         if self.rebalancer is None:
-            raise RuntimeError("Strategy requires an attached Rebalancer to plan rebalances.")
+            raise RuntimeError("Strategy requires an attached Rebalancer to execute rebalance.")
 
         prices = dict(self._latest_prices)
-        if reference_prices:
-            prices.update(reference_prices)
+        if current_prices:
+            prices.update(current_prices)
 
-        plan = self.rebalancer.plan_rebalance(
+        return self.rebalancer.rebalance(
             target_weights=target_weights,
-            reference_prices=prices,
-            decision_date=decision_date,
+            current_prices=prices,
+            instruments=instruments,
         )
-        self.queue_rebalance_plan(plan, execution_session=execution_session)
-        return plan
 
 
 # Reusable alias for strategy authoring
