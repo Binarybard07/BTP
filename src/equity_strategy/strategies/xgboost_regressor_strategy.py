@@ -3,8 +3,7 @@ import logging
 import pathlib
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 from nautilus_trader.common import LogLevel
-from nautilus_trader.config import FileWriterConfig
-from nautilus_trader.config import LoggerConfig
+from nautilus_trader.config import FileWriterConfig, LoggerConfig, PortfolioConfig
 from nautilus_trader.model import TraderId
 import pandas as pd
 from equity_strategy.logging_config import configure_logging
@@ -482,6 +481,7 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
 
         cfg = engine_config or BacktestEngineConfig(
             trader_id=TraderId.from_str("TESTER-001"),
+            portfolio=PortfolioConfig(equity_curve=False),
             logging=LoggerConfig(
                 stdout_level=LogLevel.OFF,
                 fileout_level=LogLevel.INFO,
@@ -737,9 +737,9 @@ if __name__ == "__main__":
         data_source=f"data/raw/{data_source}",
         starting_balance=10_000_00.0,
         top_n=20,
-        min_train_days=252*5,
+        min_train_days=252,
         unique_id=unique_id,
-        start_date="2020-01-01",
+        start_date="2024-01-01",
     )
 
     logger.info("=== Multi-Instrument XGBoost Regressor Backtest Completed: %s ===", unique_id)

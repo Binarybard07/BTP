@@ -5,6 +5,7 @@ import pandas as pd
 
 from nautilus_trader.analysis import create_tearsheet
 from nautilus_trader.backtest import BacktestEngine, BacktestEngineConfig
+from nautilus_trader.config import PortfolioConfig
 from nautilus_trader.model import (
     AccountType,
     Bar,
@@ -241,7 +242,9 @@ class MACrossoverStrategy(Strategy):
 
         pipe = pipeline or StrategyDataPipeline()
 
-        cfg = engine_config or BacktestEngineConfig()
+        cfg = engine_config or BacktestEngineConfig(
+            portfolio=PortfolioConfig(equity_curve=False)
+        )
         engine = BacktestEngine(config=cfg)
 
         engine.add_venue(
