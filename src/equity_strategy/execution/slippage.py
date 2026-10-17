@@ -375,7 +375,3 @@ class SlippageFillModel(FillModel):
             book.apply_delta(OrderBookDelta(instrument.id, BookAction.ADD, ask_order, 0, 2, 0, 0))
 
         return book
-
-
-# Backward-compatible alias
-AdverseSlippageFillModel = SlippageFillModel

@@ -37,6 +37,5 @@ __all__ = [
     "FixedTickSlippage",
     "SpreadSlippage",
     "SlippageFillModel",
-    "AdverseSlippageFillModel",
     "AdverseSlippageConfig",
 ]
