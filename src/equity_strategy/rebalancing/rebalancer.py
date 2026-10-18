@@ -15,7 +15,7 @@ from nautilus_trader.model import (
 from nautilus_trader.portfolio import Portfolio
 from nautilus_trader.trading import Strategy
 
-from equity_strategy.risk_management.base import BaseRiskManager
+from equity_strategy.risk_management import BaseRiskManager
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,11 @@ class Rebalancer:
         self.base_currency: Optional[Currency] = (
             Currency.from_str(base_currency) if isinstance(base_currency, str) else base_currency
         )
-        self.risk_manager: Optional[BaseRiskManager] = risk_manager
+        self.risk_manager: Optional[BaseRiskManager] = (
+            risk_manager
+            if risk_manager is not None
+            else (getattr(strategy, "risk_manager", None) if strategy is not None else None)
+        )
 
         self._auto_infer_venue_and_currency()
 
@@ -222,6 +226,9 @@ class Rebalancer:
         current_equity = self.get_current_equity()
         if current_equity <= 0.0:
             raise ValueError(f"Portfolio equity must be positive to size positions, got {current_equity:.2f}")
+
+        if self.risk_manager is None:
+            raise RuntimeError("Rebalancer requires an initialized risk_manager to calculate deployment budget.")
 
         deployment_budget = self.risk_manager.calculate_deployment_budget(current_equity)
 
