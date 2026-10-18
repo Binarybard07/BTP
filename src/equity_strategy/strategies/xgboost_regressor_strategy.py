@@ -1,13 +1,15 @@
+"""
+Multi-instrument XGBoost quantitative equity strategy for NautilusTrader.
+"""
 import copy
 import logging
 import pathlib
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
+
+from nautilus_trader.backtest import BacktestEngine, BacktestEngineConfig
 from nautilus_trader.common import LogLevel
 from nautilus_trader.config import FileWriterConfig, LoggerConfig, PortfolioConfig
-from nautilus_trader.model import TraderId
-import pandas as pd
-from equity_strategy.logging_config import configure_logging
-from nautilus_trader.backtest import BacktestEngine, BacktestEngineConfig
+from nautilus_trader.execution import FeeModel, FillModel, StaticLatencyModel
 from nautilus_trader.model import (
     AccountType,
     Bar,
@@ -17,174 +19,129 @@ from nautilus_trader.model import (
     Money,
     OmsType,
     OrderFilled,
-    QuoteTick,
+    TraderId,
     Venue,
 )
-from nautilus_trader.execution import FeeModel, FillModel, StaticLatencyModel
+import pandas as pd
 
-from equity_strategy.strategies.base import BaseExecutionConfig, BaseExecutionStrategy
-from equity_strategy.execution import (
-    SlippageConfig,
-    SlippageFillModel,
-    DPChargesConfig,
-    IndianEquityDeliveryFeeModel,
-    OrdinaryChargesConfig,
-)
 from equity_strategy.data.strategy_data import StrategyDataPipeline
 from equity_strategy.data.training_dataset import (
-    TrainingDatasetBuilder,
     FEATURE_COLUMNS,
     TARGET_COLUMN,
+    TrainingDatasetBuilder,
 )
+from equity_strategy.execution import (
+    IndianEquityDeliveryFeeModel,
+    SlippageConfig,
+    SlippageFillModel,
+)
+from equity_strategy.logging_config import configure_logging
 from equity_strategy.models.base import BaseModel
 from equity_strategy.models.xgboost_regressor import XGBoostRegressor
 from equity_strategy.portfolio.base import BasePortfolio
 from equity_strategy.portfolio.equal_weight import EqualWeightPortfolio
-from equity_strategy.rebalancing.base import BaseRebalanceStrategy
-from equity_strategy.rebalancing.monthly import MonthlyRebalanceStrategy
 from equity_strategy.rebalancing.rebalancer import Rebalancer
-from equity_strategy.risk_management import FixedPercentageRiskManager
-from equity_strategy.reporting import (
-    MarketDataExporter,
-    NautilusExporter,
-    RunStore,
-    StrategyExporter,
-)
+from equity_strategy.reporting import NautilusExporter
+from equity_strategy.risk_management import BaseRiskManager, FixedPercentageRiskManager
 from equity_strategy.selection.base import BaseSelector
-from equity_strategy.selection.top_n import TopNSelector
 from equity_strategy.selection.percentile import PercentileSelector
+from equity_strategy.selection.top_n import TopNSelector
+from equity_strategy.strategies.base import BaseStrategy, BaseStrategyConfig
 from equity_strategy.targets.engine import TargetEngine
 
 logger = logging.getLogger(__name__)
 
 
-class XGBoostRegressorConfig(BaseExecutionConfig):
+class XGBoostRegressorConfig(BaseStrategyConfig):
     """
-    Configuration for the event-driven XGBoostRegressorStrategy.
+    Configuration for XGBoostRegressorStrategy.
 
-    Parameters:
-        bar_types: List of Nautilus BarType subscriptions for the active universe.
-        featured_df: Precomputed historical feature DataFrame for all valid instruments.
-        training_df: Clean training dataset with features and realized target_10d returns.
-        all_trading_dates: Chronologically sorted unique trading dates across the universe.
-        instruments_by_date: Mapping of session date to active instruments in that session.
-        feature_columns: Model feature column names (default: 6 technical features).
-        target_horizon: Forward return horizon in trading days (default: 10).
-        target_column: Target column name (default: 'target_10d').
-        min_train_days: Minimum historical trading days before first rebalance (default: 252).
-        top_n: Number of top-ranked stocks to select (default: 20).
-        max_deployment_pct: Fraction of portfolio equity to deploy (default: 1.0 = 100%).
-        model: Swappable ML regressor prototype adhering to BaseModel.
-        selector: Swappable stock selector adhering to BaseSelector.
-        portfolio: Swappable portfolio constructor adhering to BasePortfolio.
-        rebalance_strategy: Swappable rebalance scheduler adhering to BaseRebalanceStrategy.
-        rebalancer: Optional execution Rebalancer instance.
-        venue: Exchange venue code (default: 'NSE').
-        currency: Base account currency (default: 'INR').
+    Contains only genuine strategy configuration parameters (no large runtime data).
     """
 
     def __init__(
         self,
-        bar_types: List[BarType],
-        featured_df: Optional[pd.DataFrame] = None,
-        training_df: Optional[pd.DataFrame] = None,
-        all_trading_dates: Optional[List[pd.Timestamp]] = None,
-        instruments_by_date: Optional[Dict[pd.Timestamp, Set[InstrumentId]]] = None,
-        feature_columns: Optional[List[str]] = None,
+        bar_types: Optional[List[BarType]] = None,
+        venue: str = "NSE",
+        currency: str = "INR",
+        exchange_tz: str = "Asia/Kolkata",
+        min_train_days: int = 252,
         target_horizon: int = 10,
         target_column: str = TARGET_COLUMN,
-        min_train_days: int = 252,
-        max_deployment_pct: float = 1.0,
+        feature_columns: Optional[List[str]] = None,
         model: Optional[BaseModel] = None,
         selector: Optional[BaseSelector] = None,
         portfolio: Optional[BasePortfolio] = None,
-        rebalance_strategy: Optional[BaseRebalanceStrategy] = None,
-        rebalancer: Optional[Rebalancer] = None,
-        venue: str = "NSE",
-        currency: str = "INR",
+        risk_manager: Optional[BaseRiskManager] = None,
         fee_model: Optional[FeeModel] = None,
         fill_model: Optional[FillModel] = None,
-        recorder: Optional[Any] = None,
-        ordinary_charges_config: Optional[OrdinaryChargesConfig] = None,
-        dp_charges_config: Optional[DPChargesConfig] = None,
-        slippage_pct: float = SlippageConfig.slippage_pct,
-        enable_slippage: bool = SlippageConfig.enabled,
-        exchange_tz: str = "Asia/Kolkata",
-        **kwargs: Any,
-    ):
+        ordinary_charges_config: Optional[Any] = None,
+        dp_charges_config: Optional[Any] = None,
+        slippage_pct: Optional[float] = None,
+        enable_slippage: Optional[bool] = None,
+    ) -> None:
         super().__init__(
             bar_types=bar_types,
             venue=venue,
             currency=currency,
             exchange_tz=exchange_tz,
-            **kwargs,
         )
-        self.featured_df = featured_df
-        self.training_df = training_df
-        self.all_trading_dates = list(all_trading_dates) if all_trading_dates is not None else []
-        self.instruments_by_date = instruments_by_date or {}
-        self.feature_columns = list(feature_columns or FEATURE_COLUMNS)
+        self.min_train_days = min_train_days
         self.target_horizon = target_horizon
         self.target_column = target_column
-        self.min_train_days = min_train_days
-        self.max_deployment_pct = max_deployment_pct
-        self.model = model or XGBoostRegressor()
-        if selector is not None:
-            self.selector = selector
-        elif "percentile" in kwargs:
-            self.selector = PercentileSelector(percentile=kwargs["percentile"])
-        elif "top_n" in kwargs:
-            self.selector = TopNSelector(n=kwargs["top_n"])
-        else:
-            self.selector = TopNSelector()
-
-        self.portfolio = portfolio or EqualWeightPortfolio()
-        self.rebalance_strategy = rebalance_strategy or MonthlyRebalanceStrategy()
-        self.rebalancer = rebalancer
+        self.feature_columns = feature_columns
+        self.model = model
+        self.selector = selector
+        self.portfolio = portfolio
+        self.risk_manager = risk_manager
         self.fee_model = fee_model
         self.fill_model = fill_model
-        self.recorder = recorder
         self.ordinary_charges_config = ordinary_charges_config
         self.dp_charges_config = dp_charges_config
         self.slippage_pct = slippage_pct
         self.enable_slippage = enable_slippage
-        self.extra_kwargs = kwargs
 
 
-class XGBoostRegressorStrategy(BaseExecutionStrategy):
+class XGBoostRegressorStrategy(BaseStrategy):
     """
-    Concrete Multi-Instrument XGBoost ML Strategy running on NautilusTrader.
+    Multi-Instrument XGBoost ML Strategy orchestrator on NautilusTrader.
 
-    Orchestrates:
-        Nautilus Bars (daily)
+    Lifecycle:
+        Daily Bars (15:30 IST)
           ↓
-        MonthlyRebalanceStrategy (causal calendar-month transition detection)
+        Month-End Session T Detection on on_bar()
           ↓
-        Expanding-Window XGBoost Model Training (strictly <= decision_date - 10 trading days)
+        Expanding-Window XGBoost Model Training (cutoff: T - target_horizon)
           ↓
-        Return Predictions on decision_date features
+        Cross-Sectional Prediction & Stock Selection
           ↓
-        Top-N Stock Selection (Top 20)
+        Equal-Weight Target Allocation
           ↓
-        Equal-Weight Target Portfolio Construction (1/N)
+        Direct Rebalance Order Submission (Sells first, then Buys)
           ↓
-        Rebalancer (equity-based sizing, lot size constraints, sells before buys)
-          ↓
-        Nautilus Market Orders via BaseExecutionStrategy T+1 Open Execution
+        Orders fill against Opening Quotes at T+1 Open (09:15 IST)
     """
 
-    def __init__(self, config: XGBoostRegressorConfig):
+    def __new__(
+        cls,
+        config: XGBoostRegressorConfig,
+        **kwargs: Any,
+    ) -> "XGBoostRegressorStrategy":
+        return super().__new__(cls, config=config)
+
+    def __init__(
+        self,
+        config: XGBoostRegressorConfig,
+        featured_df: pd.DataFrame,
+        training_df: pd.DataFrame,
+        all_trading_dates: List[pd.Timestamp],
+        instruments_by_date: Dict[pd.Timestamp, Set[InstrumentId]],
+    ) -> None:
         super().__init__(config=config)
-        self.featured_df: pd.DataFrame = (
-            config.featured_df if config.featured_df is not None else pd.DataFrame()
-        )
-        self.training_df: pd.DataFrame = (
-            config.training_df if config.training_df is not None else pd.DataFrame()
-        )
-        self.instruments_by_date: Dict[pd.Timestamp, Set[InstrumentId]] = (
-            config.instruments_by_date
-        )
-        self.all_trading_dates: List[pd.Timestamp] = config.all_trading_dates
+        self.featured_df = featured_df
+        self.training_df = training_df
+        self.all_trading_dates = all_trading_dates
+        self.instruments_by_date = instruments_by_date
         self.date_to_index: Dict[pd.Timestamp, int] = {
             d: i for i, d in enumerate(self.all_trading_dates)
         }
@@ -193,90 +150,74 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
         }
         self._latest_prices: Dict[InstrumentId, float] = {}
 
-        self.feature_columns: List[str] = config.feature_columns
+        if config.feature_columns is None:
+            self.feature_columns: List[str] = list(FEATURE_COLUMNS)
+        else:
+            self.feature_columns = list(config.feature_columns)
+
         self.target_horizon: int = config.target_horizon
         self.target_column: str = config.target_column
         self.min_train_days: int = config.min_train_days
-        self.top_n: Optional[int] = getattr(config, "top_n", None)
-        self.model_prototype: BaseModel = config.model
-        self.selector: BaseSelector = config.selector
-        self.portfolio_constructor: BasePortfolio = config.portfolio
-        self.rebalance_strategy: BaseRebalanceStrategy = config.rebalance_strategy
-        self.rebalancer: Optional[Rebalancer] = config.rebalancer
+
+        self.model_prototype: BaseModel = (
+            XGBoostRegressor() if config.model is None else config.model
+        )
+        self.selector: BaseSelector = (
+            TopNSelector() if config.selector is None else config.selector
+        )
+        self.portfolio_constructor: BasePortfolio = (
+            EqualWeightPortfolio() if config.portfolio is None else config.portfolio
+        )
         self.fee_model: Optional[FeeModel] = config.fee_model
         self.fill_model: Optional[FillModel] = config.fill_model
-        self.risk_manager = FixedPercentageRiskManager(
-            max_deployment_pct=config.max_deployment_pct
-        )
+        self.rebalancer: Optional[Rebalancer] = None
 
-        # Session tracking for multi-instrument bar collection
+        # Risk manager precedence: explicitly passed risk_manager > configured max_deployment_pct
+        if config.risk_manager is not None:
+            self.risk_manager: BaseRiskManager = config.risk_manager
+        else:
+            self.risk_manager = FixedPercentageRiskManager(1.0)
+
+        # Multi-instrument synchronization and decision tracking
         self._session_reported_bars: Dict[pd.Timestamp, Set[InstrumentId]] = {}
-
-        # Rebalance planning session records
         self._rebalance_plans_by_decision_date: Set[pd.Timestamp] = set()
 
-        # Strategy telemetry and research history
-        self.rebalance_dates: List[pd.Timestamp] = []
-        self.weights_by_date: Dict[pd.Timestamp, Dict[str, float]] = {}
-        self.selected_stocks_by_date: Dict[pd.Timestamp, List[str]] = {}
-        self.predictions_by_date: Dict[pd.Timestamp, pd.DataFrame] = {}
-        self.orders_by_date: Dict[pd.Timestamp, List[Any]] = {}
-
     def on_start(self) -> None:
-        """
-        Nautilus lifecycle callback:
-        Initializes base execution infrastructure, subscribes to bars and opening quotes,
-        wires Rebalancer, and resets the MonthlyRebalanceStrategy.
-        """
+        """Initializes subscriptions and execution infrastructure."""
         super().on_start()
 
-        # Subscribe to opening quotes for T+1 open execution / month transition detection
+        # Subscribe to opening quotes so submitted market orders match at next session open
         for bar_type in self.bar_types:
             self.subscribe_quotes(bar_type.instrument_id)
 
-        # Wire execution rebalancer
-        if self.rebalancer is None:
-            self.rebalancer = Rebalancer(
-                strategy=self,
-                default_venue=self.venue,
-                base_currency=self.currency,
-                risk_manager=self.risk_manager,
-            )
-        else:
-            self.rebalancer.strategy = self
-            if self.rebalancer.risk_manager is None:
-                self.rebalancer.risk_manager = self.risk_manager
+        # Wire rebalancer with authoritative strategy risk manager
+        self.rebalancer = Rebalancer(
+            strategy=self,
+            default_venue=self.venue,
+            base_currency=self.currency,
+            risk_manager=self.risk_manager,
+        )
 
-        # Attach engine simulation clock to fee and fill models
-        if self.fee_model and hasattr(self.fee_model, "set_clock"):
+        # Attach simulation clock to fee model if supported
+        if self.fee_model is not None and hasattr(self.fee_model, "set_clock"):
             self.fee_model.set_clock(self.clock)
-        if self.fill_model and hasattr(self.fill_model, "set_clock"):
-            self.fill_model.set_clock(self.clock)
 
-        self.rebalance_strategy.reset()
         logger.info(
             "XGBoostRegressorStrategy started with %d instruments.", len(self.bar_types)
         )
 
     def on_order_filled(self, event: OrderFilled) -> None:
-        """
-        Nautilus lifecycle callback when an order fill event is received.
-        Delegates fill reconciliation to fee and slippage models.
-        """
-        if self.fill_model and hasattr(self.fill_model, "record_fill"):
+        """Delegates fill reconciliation to slippage fill model if supported."""
+        if self.fill_model is not None and hasattr(self.fill_model, "record_fill"):
             self.fill_model.record_fill(event)
-        if self.fee_model and hasattr(self.fee_model, "on_order_filled"):
-            self.fee_model.on_order_filled(event)
 
     def on_bar(self, bar: Bar) -> None:
         """
-        Nautilus lifecycle callback for daily closing bars (15:30 IST):
-        1. Tracks latest close price for the incoming instrument.
-        2. Tracks bars reporting in the current session.
-        3. Once all expected instruments have reported their session T bars, checks
-           whether session T is the final trading session of the calendar month (T close).
-        4. If session T is month-end, executes the lookahead-free rebalance directly through
-           the Rebalancer, submitting native Nautilus market orders.
+        Sole rebalance trigger:
+        1. Tracks latest close prices from Nautilus execution bars.
+        2. Synchronizes across universe for session T.
+        3. Once all expected instruments report, evaluates month-end decision.
+        4. Submits rebalance orders at T close.
         """
         inst_id = bar.bar_type.instrument_id
         self._latest_prices[inst_id] = float(bar.close.as_double())
@@ -288,59 +229,34 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
 
         expected_instruments = self.instruments_by_date.get(bar_date)
         if expected_instruments and self._session_reported_bars[bar_date] >= expected_instruments:
-            # Check if bar_date is month-end trading session T
-            date_idx = self.date_to_index.get(bar_date)
-            if date_idx is not None:
-                is_month_end = (
-                    date_idx == len(self.all_trading_dates) - 1
-                    or self.all_trading_dates[date_idx + 1].month != bar_date.month
-                )
-                if is_month_end and bar_date not in self._rebalance_plans_by_decision_date:
-                    logger.info(
-                        "Month-end trading session T close reached: %s. Executing direct rebalance...",
-                        bar_date.strftime("%Y-%m-%d"),
-                    )
-                    self._execute_rebalance(bar_date)
+            if bar_date not in self.date_to_index:
+                raise KeyError(f"Bar date {bar_date} not found in trading calendar.")
+            date_idx = self.date_to_index[bar_date]
 
-    def on_quote(self, quote: QuoteTick) -> None:
-        """
-        Nautilus lifecycle callback for opening QuoteTicks (09:15 IST):
-        Evaluates causal monthly scheduler fallback if rebalance was not triggered at T close.
-        """
-        decision_date = self.rebalance_strategy.step(quote)
-        if (
-            decision_date is not None
-            and decision_date not in self._rebalance_plans_by_decision_date
-        ):
-            logger.info(
-                "Causal month transition detected on opening quote %s: executing direct rebalance for session T=%s",
-                quote.instrument_id,
-                decision_date.strftime("%Y-%m-%d"),
+            is_month_end = (
+                date_idx == len(self.all_trading_dates) - 1
+                or self.all_trading_dates[date_idx + 1].month != bar_date.month
             )
-            self._execute_rebalance(decision_date)
+            if is_month_end and bar_date not in self._rebalance_plans_by_decision_date:
+                logger.info(
+                    "Month-end trading session T close reached: %s. Executing rebalance...",
+                    bar_date.strftime("%Y-%m-%d"),
+                )
+                self._execute_rebalance(bar_date)
 
-    def _get_fresh_model(self) -> BaseModel:
-        """Instantiates a fresh model instance to avoid carryover state between folds."""
-        if hasattr(self.model_prototype, "params") and hasattr(
-            type(self.model_prototype), "__init__"
-        ):
-            return type(self.model_prototype)(**self.model_prototype.params)
+    def _create_fresh_model(self) -> BaseModel:
+        """Creates an unfitted model instance preserving configured hyperparameters."""
         return copy.deepcopy(self.model_prototype)
 
     def _execute_rebalance(self, decision_date: pd.Timestamp) -> None:
         """
-        Executes lookahead-free ML training, prediction, selection, and direct portfolio rebalance
-        using data available through session T close (decision_date).
-        Submits native Nautilus market orders directly through the Rebalancer.
+        Executes lookahead-free training, prediction, portfolio construction,
+        and rebalance order submission at session T close.
         """
         self._rebalance_plans_by_decision_date.add(decision_date)
+        date_idx = self.date_to_index[decision_date]
 
-        # Step 1: Check minimum training history
-        date_idx = self.date_to_index.get(decision_date)
-        if date_idx is None:
-            past_dates = [d for d in self.all_trading_dates if d <= decision_date]
-            date_idx = len(past_dates) - 1
-
+        # Minimum training history requirement
         if date_idx < self.min_train_days:
             logger.info(
                 "Skipping rebalance at %s: elapsed trading days (%d) < min_train_days (%d)",
@@ -350,7 +266,7 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
             )
             return
 
-        # Step 2: Determine training cutoff date (Lookahead prevention)
+        # Lookahead prevention: cutoff at T - target_horizon
         cutoff_idx = max(0, date_idx - self.target_horizon)
         train_cutoff_date = self.all_trading_dates[cutoff_idx]
 
@@ -366,15 +282,15 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
         y_train = train_subset[self.target_column]
 
         logger.info(
-            "Training pooled XGBoost model for rebalance %s (cutoff: %s, train rows: %d)...",
+            "Training pooled model for rebalance %s (cutoff: %s, train rows: %d)...",
             decision_date.strftime("%Y-%m-%d"),
             train_cutoff_date.strftime("%Y-%m-%d"),
             len(train_subset),
         )
-        model = self._get_fresh_model()
+        model = self._create_fresh_model()
         model.train(X_train, y_train)
 
-        # Step 3: Feature extraction and prediction on decision_date
+        # Cross-sectional features on decision date
         current_bar_data = self.featured_df[self.featured_df["Date"] == decision_date].copy()
         valid_current = current_bar_data.dropna(subset=self.feature_columns)
         if valid_current.empty:
@@ -391,9 +307,8 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
             "Symbol": valid_current["Symbol"].astype(str).values,
             "score": scores,
         })
-        self.predictions_by_date[decision_date] = selection_df
 
-        # Step 4: Selection and Portfolio Construction
+        # Stock selection and portfolio construction
         selected_symbols = self.selector.select(selection_df)
         if not selected_symbols:
             logger.warning("Selector returned empty list for date %s.", decision_date)
@@ -406,11 +321,7 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
             )
             return
 
-        self.rebalance_dates.append(decision_date)
-        self.selected_stocks_by_date[decision_date] = selected_symbols
-        self.weights_by_date[decision_date] = target_weights_by_symbol
-
-        # Step 5: Map target weights to InstrumentId
+        # Map target weights to InstrumentId
         target_weights: Dict[Union[InstrumentId, str], float] = {}
         for sym, w in target_weights_by_symbol.items():
             sym_clean = sym.strip().upper()
@@ -420,18 +331,7 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
             else:
                 target_weights[f"{sym_clean}.{self.venue}"] = w
 
-        # Current prices: latest observed prices
-        prices_for_rebalancer: Dict[Union[InstrumentId, str], float] = dict(self._latest_prices)
-
-        # Fallback reference prices from current_bar_data
-        for _, row in valid_current.iterrows():
-            sym_str = str(row["Symbol"]).strip().upper()
-            inst_id = self._symbol_to_instrument_id.get(sym_str)
-            if inst_id is not None and inst_id not in prices_for_rebalancer:
-                if "Close" in row and not pd.isna(row["Close"]) and float(row["Close"]) > 0:
-                    prices_for_rebalancer[inst_id] = float(row["Close"])
-
-        # Step 6: Direct Rebalance Submission
+        # Direct rebalance execution using authoritative latest closing prices
         logger.info(
             "Invoking Rebalancer for %d target symbols (Total Weight: %.4f) on %s...",
             len(target_weights),
@@ -440,9 +340,8 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
         )
         orders = self.rebalancer.rebalance(
             target_weights=target_weights,
-            current_prices=prices_for_rebalancer,
+            current_prices=self._latest_prices,
         )
-        self.orders_by_date[decision_date] = orders
         logger.info(
             "Rebalance for %s complete: %d orders submitted directly.",
             decision_date.strftime("%Y-%m-%d"),
@@ -454,51 +353,35 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
         cls,
         data_source: Union[str, pathlib.Path, pd.DataFrame] = "data/raw/NIFTY50",
         symbol: Optional[str] = None,
-        venue: str = "NSE",
-        currency: str = "INR",
-        starting_balance: float = 10_000_000.0,
-        pipeline: Optional[StrategyDataPipeline] = None,
-        engine_config: Optional[BacktestEngineConfig] = None,
-        config: Optional[XGBoostRegressorConfig] = None,
-        feature_columns: Optional[List[str]] = None,
-        target_horizon: int = 10,
-        target_column: str = TARGET_COLUMN,
-        min_train_days: int = 252,
-        max_deployment_pct: float = 1.0,
-        fee_model: Optional[FeeModel] = None,
-        fill_model: Optional[FillModel] = None,
-        ordinary_charges_config: Optional[OrdinaryChargesConfig] = None,
-        dp_charges_config: Optional[DPChargesConfig] = None,
-        slippage_pct: float = SlippageConfig.slippage_pct,
-        enable_slippage: bool = SlippageConfig.enabled,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
-        unique_id: str = "001",
-        **kwargs: Any,
+        starting_balance: float = 10_000_000.0,
+        config: Optional[XGBoostRegressorConfig] = None,
+        pipeline: Optional[StrategyDataPipeline] = None,
+        engine_config: Optional[BacktestEngineConfig] = None,
+        unique_id: Optional[str] = None,
     ) -> BacktestEngine:
         """
-        Executes a real multi-instrument NautilusTrader backtest for XGBoostRegressorStrategy.
-
-        Flow:
-            Directory of CSVs (or single CSV / DataFrame)
-              -> For each source: StrategyDataPipeline.prepare() with strict validation
-              -> Strictly skip invalid files and log validation error
-              -> Register each valid Equity with BacktestEngine
-              -> Add all Bar streams to BacktestEngine
-              -> Construct pooled training and feature datasets across valid universe
-              -> Sort all bars chronologically
-              -> Create ONE XGBoostRegressorStrategy managing the entire universe
-              -> Run ONE shared cash account / portfolio
-              -> Return completed BacktestEngine
+        Executes a multi-instrument NautilusTrader backtest for XGBoostRegressorStrategy.
         """
-        items_to_process: List[Tuple[Union[str, pathlib.Path, pd.DataFrame], Optional[str]]] = []
+        strat_config = XGBoostRegressorConfig() if config is None else config
+        venue = strat_config.venue
+        currency = strat_config.currency
+        unique_id = "001" if unique_id is None else unique_id
+        target_horizon = strat_config.target_horizon
+        target_column = strat_config.target_column
+        if strat_config.feature_columns is None:
+            f_cols = list(FEATURE_COLUMNS)
+        else:
+            f_cols = list(strat_config.feature_columns)
 
+        items_to_process: List[Tuple[Union[str, pathlib.Path, pd.DataFrame], Optional[str]]] = []
         if isinstance(data_source, pd.DataFrame):
             items_to_process.append((data_source, symbol))
         else:
             p = pathlib.Path(data_source)
             if p.is_file():
-                sym = symbol or p.stem.strip().upper()
+                sym = p.stem.strip().upper() if symbol is None else symbol
                 items_to_process.append((p, sym))
             elif p.is_dir():
                 if symbol:
@@ -516,50 +399,54 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
             else:
                 raise FileNotFoundError(f"Data source not found: {data_source}")
 
-        pipe = pipeline or StrategyDataPipeline()
+        pipe = StrategyDataPipeline() if pipeline is None else pipeline
 
-        # Initialize per-run storage and manifest
-        run_store = RunStore(run_id=unique_id, base_dir="strategy_results")
-        run_dir = run_store.create_run_dir()
+        run_dir = pathlib.Path("strategy_results") / unique_id
+        run_dir.mkdir(parents=True, exist_ok=True)
 
-        cfg = engine_config or BacktestEngineConfig(
-            trader_id=TraderId.from_str("TESTER-001"),
-            portfolio=PortfolioConfig(equity_curve=False),
-            logging=LoggerConfig(
-                stdout_level=LogLevel.OFF,
-                fileout_level=LogLevel.INFO,
-                component_levels={"Portfolio": "INFO"},
-                file_config=FileWriterConfig(
-                    directory=str(run_dir),
-                    file_name="nautilus.log",
+        if engine_config is None:
+            cfg = BacktestEngineConfig(
+                trader_id=TraderId.from_str("TESTER-001"),
+                portfolio=PortfolioConfig(equity_curve=False),
+                logging=LoggerConfig(
+                    stdout_level=LogLevel.OFF,
+                    fileout_level=LogLevel.INFO,
+                    component_levels={"Portfolio": "INFO"},
+                    file_config=FileWriterConfig(
+                        directory=str(run_dir),
+                        file_name="nautilus.log",
+                    ),
                 ),
-            ),
-        )
+            )
+        else:
+            cfg = engine_config
         engine = BacktestEngine(config=cfg)
 
-        if config is not None:
-            venue = config.venue
-            currency = config.currency
-            target_horizon = config.target_horizon
-            target_column = config.target_column
-            if config.feature_columns:
-                feature_columns = config.feature_columns
-
-        active_fee_model = fee_model or (config.fee_model if config is not None else None)
-        if active_fee_model is None:
+        if strat_config.fee_model is None:
             active_fee_model = IndianEquityDeliveryFeeModel(
-                ordinary_config=ordinary_charges_config or (config.ordinary_charges_config if config is not None else None),
-                dp_config=dp_charges_config or (config.dp_charges_config if config is not None else None),
+                ordinary_config=strat_config.ordinary_charges_config,
+                dp_config=strat_config.dp_charges_config,
             )
+        else:
+            active_fee_model = strat_config.fee_model
 
-        active_fill_model = fill_model or (config.fill_model if config is not None else None)
-        if active_fill_model is None:
+        if strat_config.fill_model is None:
             active_fill_model = SlippageFillModel(
                 config=SlippageConfig(
-                    slippage_pct=config.slippage_pct if config is not None else slippage_pct,
-                    enabled=config.enable_slippage if config is not None else enable_slippage,
+                    slippage_pct=(
+                        strat_config.slippage_pct
+                        if strat_config.slippage_pct is not None
+                        else SlippageConfig.slippage_pct
+                    ),
+                    enabled=(
+                        strat_config.enable_slippage
+                        if strat_config.enable_slippage is not None
+                        else SlippageConfig.enabled
+                    ),
                 ),
             )
+        else:
+            active_fill_model = strat_config.fill_model
 
         engine.add_venue(
             venue=Venue(venue),
@@ -574,8 +461,6 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
         bar_types: List[BarType] = []
         featured_dfs: List[pd.DataFrame] = []
         skipped_files: List[Tuple[str, Optional[str], str]] = []
-        all_bars_loaded: List[Bar] = []
-        all_quotes_loaded: List[QuoteTick] = []
 
         for src, sym in items_to_process:
             filename = (
@@ -604,10 +489,8 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
 
             engine.add_instrument(prepared.equity)
             engine.add_data(prepared.bars)
-            all_bars_loaded.extend(prepared.bars)
             if prepared.opening_quotes:
                 engine.add_data(prepared.opening_quotes)
-                all_quotes_loaded.extend(prepared.opening_quotes)
             bar_types.append(prepared.bar_type)
             featured_dfs.append(prepared.featured_df)
 
@@ -625,14 +508,6 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
             for fname, s, err in skipped_files:
                 logger.warning("  - File: '%s', Symbol: '%s' -> %s", fname, s, err)
 
-        # Export loaded market data
-        MarketDataExporter.export(
-            bars=all_bars_loaded,
-            opening_quotes=all_quotes_loaded,
-            run_dir=run_dir,
-        )
-
-        # Build pooled datasets across valid universe
         combined_featured_df = pd.concat(featured_dfs, ignore_index=True)
         combined_featured_df["Date"] = pd.to_datetime(combined_featured_df["Date"])
         combined_featured_df = combined_featured_df.sort_values(
@@ -643,7 +518,6 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
         targeted_df = target_eng.transform(combined_featured_df)
         targeted_df["Date"] = pd.to_datetime(targeted_df["Date"])
 
-        f_cols = list(feature_columns or FEATURE_COLUMNS)
         builder = TrainingDatasetBuilder(
             feature_columns=f_cols,
             target_column=target_column,
@@ -665,77 +539,20 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
                 for s in grp["Symbol"]
             }
 
-        if config is not None:
-            strat_config = config
-            if not strat_config.bar_types:
-                strat_config.bar_types = bar_types
-            if strat_config.featured_df is None or strat_config.featured_df.empty:
-                strat_config.featured_df = combined_featured_df
-            if strat_config.training_df is None or strat_config.training_df.empty:
-                strat_config.training_df = training_df
-            if not strat_config.all_trading_dates:
-                strat_config.all_trading_dates = all_trading_dates
-            if not strat_config.instruments_by_date:
-                strat_config.instruments_by_date = instruments_by_date
-        else:
-            strat_config = XGBoostRegressorConfig(
-                bar_types=bar_types,
-                featured_df=combined_featured_df,
-                training_df=training_df,
-                all_trading_dates=all_trading_dates,
-                instruments_by_date=instruments_by_date,
-                feature_columns=f_cols,
-                target_horizon=target_horizon,
-                target_column=target_column,
-                min_train_days=min_train_days,
-                max_deployment_pct=max_deployment_pct,
-                venue=venue,
-                currency=currency,
-                fee_model=active_fee_model,
-                fill_model=active_fill_model,
-                ordinary_charges_config=ordinary_charges_config,
-                dp_charges_config=dp_charges_config,
-                slippage_pct=slippage_pct,
-                enable_slippage=enable_slippage,
-                **kwargs,
-            )
-
-        # Initialize metadata manifest
-        loaded_symbols = [str(bt.instrument_id.symbol) for bt in bar_types]
-        config_summary = {
-            "data_source": str(data_source),
-            "symbol": symbol,
-            "starting_balance": starting_balance,
-            "venue": strat_config.venue,
-            "currency": strat_config.currency,
-            "target_horizon": strat_config.target_horizon,
-            "target_column": strat_config.target_column,
-            "min_train_days": strat_config.min_train_days,
-            "start_date": start_date,
-            "end_date": end_date,
-            "enable_slippage": getattr(strat_config, "enable_slippage", enable_slippage),
-            "slippage_pct": getattr(strat_config, "slippage_pct", slippage_pct),
-            "max_deployment_pct": strat_config.max_deployment_pct,
-            "selector": type(strat_config.selector).__name__,
-        }
-        if hasattr(strat_config.selector, "n"):
-            config_summary["top_n"] = strat_config.selector.n
-        elif hasattr(strat_config, "top_n") and strat_config.top_n is not None:
-            config_summary["top_n"] = strat_config.top_n
-        if hasattr(strat_config.selector, "percentile"):
-            config_summary["percentile"] = strat_config.selector.percentile
-        elif hasattr(strat_config, "percentile") and strat_config.percentile is not None:
-            config_summary["percentile"] = strat_config.percentile
-        run_store.init_metadata(symbols=loaded_symbols, config=config_summary)
-
+        strat_config.bar_types = bar_types
         engine.sort_data()
 
-        strategy = cls(config=strat_config)
+        strategy = cls(
+            config=strat_config,
+            featured_df=combined_featured_df,
+            training_df=training_df,
+            all_trading_dates=all_trading_dates,
+            instruments_by_date=instruments_by_date,
+        )
         engine.add_strategy(strategy)
 
         start_ts = None
         end_ts = None
-
         if start_date is not None:
             start_ts = (
                 pd.Timestamp(start_date)
@@ -743,7 +560,6 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
                 .tz_convert("UTC")
                 .value
             )
-
         if end_date is not None:
             end_ts = (
                 pd.Timestamp(end_date)
@@ -756,49 +572,43 @@ class XGBoostRegressorStrategy(BaseExecutionStrategy):
         if start_ts is not None and end_ts is not None and start_ts >= end_ts:
             raise ValueError("start_date must be before end_date")
 
-        try:
-            if start_ts is not None and end_ts is not None:
-                engine.run(start=start_ts, end=end_ts)
-            elif start_ts is not None:
-                engine.run(start=start_ts)
-            elif end_ts is not None:
-                engine.run(end=end_ts)
-            else:
-                engine.run()
+        if start_ts is not None and end_ts is not None:
+            engine.run(start=start_ts, end=end_ts)
+        elif start_ts is not None:
+            engine.run(start=start_ts)
+        elif end_ts is not None:
+            engine.run(end=end_ts)
+        else:
+            engine.run()
 
-            # Post-run report and decision exports
-            NautilusExporter.export(
-                engine=engine,
-                run_dir=run_dir,
-                venue=venue,
-                currency=currency,
-            )
-            StrategyExporter.export(
-                strategy=strategy,
-                run_dir=run_dir,
-            )
-            run_store.complete_metadata()
-            return engine
-        except Exception as exc:
-            run_store.fail_metadata(error=str(exc))
-            raise
+        NautilusExporter.export(
+            engine=engine,
+            run_dir=run_dir,
+            venue=venue,
+            currency=currency,
+        )
+        return engine
 
 
 if __name__ == "__main__":
-
+    
     configure_logging()
     data_source = "NIFTY50"
     logger.info("Starting XGBoost Regressor Strategy Backtest...")
     unique_id = data_source + "_" + pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
 
+    config = XGBoostRegressorConfig(
+        min_train_days=252 * 4,
+        selector=PercentileSelector(percentile=85.0),
+        risk_manager=FixedPercentageRiskManager(0.75),
+    )
+
     engine = XGBoostRegressorStrategy.run(
         data_source=f"data/raw/{data_source}",
-        starting_balance=10_000_00.0,
-        min_train_days=252*4,
+        start_date="2024-01-01",
+        starting_balance=10_000_000.0,
+        config=config,
         unique_id=unique_id,
-        start_date="2014-01-01",
-        max_deployment_pct=0.75,
-        percentile=85
     )
 
     logger.info("=== Multi-Instrument XGBoost Regressor Backtest Completed: %s ===", unique_id)
