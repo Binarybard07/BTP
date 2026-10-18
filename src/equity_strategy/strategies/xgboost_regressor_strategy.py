@@ -55,7 +55,6 @@ from equity_strategy.selection.top_n import TopNSelector
 from equity_strategy.strategies.base import BaseStrategy, BaseStrategyConfig
 from equity_strategy.targets.engine import TargetEngine
 from equity_strategy.trade_manager import BaseTradeManager
-from equity_strategy.trade_manager.fixed import FixedTPSLTradeManager
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +202,10 @@ class XGBoostRegressorStrategy(BaseStrategy):
         # Subscribe to opening quotes so submitted market orders match at next session open
         for bar_type in self.bar_types:
             self.subscribe_quotes(bar_type.instrument_id)
+
+        # Wire trade manager indicator registration if applicable (e.g. ATRTradeManager)
+        if self.trade_manager is not None and hasattr(self.trade_manager, "register"):
+            self.trade_manager.register(self, self.bar_types)
 
         # Wire position manager with strategy runtime and trade manager
         if self.position_manager is None and self.trade_manager is not None:
@@ -485,7 +488,7 @@ class XGBoostRegressorStrategy(BaseStrategy):
 
         if strat_config.fill_model is None:
             active_fill_model = SlippageFillModel(
-                    config=SlippageConfig(
+                config=SlippageConfig(
                     slippage_pct=(
                         strat_config.slippage_pct
                         if strat_config.slippage_pct is not None
@@ -659,10 +662,9 @@ if __name__ == "__main__":
     unique_id = data_source + "_" + pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
 
     config = XGBoostRegressorConfig(
-        min_train_days=252,
+        min_train_days=252 * 4,
         selector=PercentileSelector(percentile=85.0),
         risk_manager=FixedPercentageRiskManager(0.75),
-        trade_manager=FixedTPSLTradeManager(0.2, 0.1)
     )
 
     engine = XGBoostRegressorStrategy.run(
