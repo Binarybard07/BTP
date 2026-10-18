@@ -62,11 +62,7 @@ class ZeroSlippage(SlippageMethod):
 
     def calculate_adjusted_price(
         self,
-        reference_price: float,
-        is_buy: bool,
-        instrument: Any,
-        best_bid: float,
-        best_ask: float,
+        reference_price: float
     ) -> float:
         return reference_price
 
@@ -85,10 +81,7 @@ class PercentSlippage(SlippageMethod):
     def calculate_adjusted_price(
         self,
         reference_price: float,
-        is_buy: bool,
-        instrument: Any,
-        best_bid: float,
-        best_ask: float,
+        is_buy: bool
     ) -> float:
         if self.slippage_pct <= 0.0:
             return reference_price
@@ -112,9 +105,7 @@ class FixedTickSlippage(SlippageMethod):
         self,
         reference_price: float,
         is_buy: bool,
-        instrument: Any,
-        best_bid: float,
-        best_ask: float,
+        instrument: Any
     ) -> float:
         increment = float(getattr(instrument, "price_increment", None) or 0.05)
         tick_delta = self.ticks * increment
@@ -138,7 +129,6 @@ class SpreadSlippage(SlippageMethod):
         self,
         reference_price: float,
         is_buy: bool,
-        instrument: Any,
         best_bid: float,
         best_ask: float,
     ) -> float:
@@ -184,7 +174,7 @@ class SlippageFillModel(FillModel):
     5. Raises explicit errors when reference price metadata is missing instead of silent zero fallback.
     """
 
-    def __new__(cls, *args: Any, **kwargs: Any) -> "SlippageFillModel":
+    def __new__(cls) -> "SlippageFillModel":
         return super().__new__(cls)
 
     def __init__(
@@ -192,8 +182,7 @@ class SlippageFillModel(FillModel):
         method: Optional[SlippageMethod] = None,
         *,
         config: Optional[SlippageConfig] = None,
-        slippage_pct: Optional[float] = None,
-        **kwargs: Any,
+        slippage_pct: Optional[float] = None
     ) -> None:
         super().__init__()
 

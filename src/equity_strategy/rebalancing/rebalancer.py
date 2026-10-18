@@ -165,7 +165,7 @@ class Rebalancer:
                 return None
 
         try:
-            qty = instrument.make_qty(raw_qty)
+            qty = instrument.make_qty(raw_qty, round_down=True)
         except ValueError:
             # Raised by Nautilus if value rounds to zero for the instrument's size precision
             return None
