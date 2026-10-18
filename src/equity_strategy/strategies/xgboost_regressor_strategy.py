@@ -172,7 +172,7 @@ class XGBoostRegressorStrategy(BaseStrategy):
         self.fill_model: Optional[FillModel] = config.fill_model
         self.rebalancer: Optional[Rebalancer] = None
 
-        # Risk manager precedence: explicitly passed risk_manager > configured max_deployment_pct
+        # Use the configured risk manager or default to 100% deployment.
         if config.risk_manager is not None:
             self.risk_manager: BaseRiskManager = config.risk_manager
         else:
@@ -514,6 +514,14 @@ class XGBoostRegressorStrategy(BaseStrategy):
             by=["Symbol", "Date"]
         ).reset_index(drop=True)
 
+        missing_features = [
+            col for col in f_cols if col not in combined_featured_df.columns
+        ]
+        if missing_features:
+            raise ValueError(
+                f"Configured feature_columns missing from featured data: {missing_features}"
+            )
+
         target_eng = TargetEngine(horizon=target_horizon, target_col=target_column)
         targeted_df = target_eng.transform(combined_featured_df)
         targeted_df["Date"] = pd.to_datetime(targeted_df["Date"])
@@ -591,7 +599,7 @@ class XGBoostRegressorStrategy(BaseStrategy):
 
 
 if __name__ == "__main__":
-    
+
     configure_logging()
     data_source = "NIFTY50"
     logger.info("Starting XGBoost Regressor Strategy Backtest...")
