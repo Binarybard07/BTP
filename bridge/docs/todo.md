@@ -1,18 +1,26 @@
 # Project Task Queue (TODO)
 
-## 🔴 Immediate (Next Implementation Steps)
+## 🔴 Immediate Roadmap (Next Implementation Steps)
 
-- [ ] **IMP-010**: Implement event-driven Nautilus `Strategy` subclass (e.g., `XGBoostNautilusStrategy`) integrating `MonthlyRebalanceStrategy` and `Rebalancer` into Nautilus `BacktestEngine`.
-- [ ] **IMP-011**: Wire multi-symbol universe data loading, feature ingestion, and bar warmup in Nautilus backtest runner.
+The project roadmap strictly follows this sequential progression:
 
----
+1. **Risk Management — Complete for current scope**
+   - [x] Basic capital-deployment budgeting is implemented via `BaseRiskManager` and `FixedPercentageRiskManager`, integrated into `Rebalancer`. Validates non-negative weights and total target weights $\le 1.0001$. No further risk-management methods are planned at this stage.
 
-## 🟡 Research & Backtesting
+2. **Trade Management Module — Next**
+   - [ ] **TRD-001**: Inspect existing trade/order execution and rebalancing implementations in `Rebalancer` and `XGBoostRegressorStrategy` to determine what trade management functionality already exists versus what is required. Avoid duplicating existing functionality or altering established execution behavior without explicit reason.
 
-- [ ] **RES-001**: Execute end-to-end backtest of XGBoost Regressor Strategy on full historical NIFTY 100 universe.
-- [ ] **RES-002**: Implement transaction cost, slippage, and STT (Securities Transaction Tax) models in Nautilus backtest engine.
-- [ ] **RES-003**: Generate performance tearsheets and risk analytics (Sharpe, Sortino, Max Drawdown, Calmar, monthly turnover).
-- [ ] **RES-004**: Evaluate feature importance and performance across expanding vs. rolling training windows.
+3. **Tax Implementation**
+   - [ ] **TAX-001**: Implement statutory tax deductions and financial-year accounting treatment (STCG/LTCG) after clarifying applicable regulatory requirements. Avoid unverified assumptions or invented tax rates.
+
+4. **Survivorship-Bias Handling**
+   - [ ] **DAT-001**: Address survivorship bias in the historical investment universe and data pipeline. Inspect current data architecture and historical index constituent continuity before designing universe filtering.
+
+5. **OpenStatz Tearsheet**
+   - [ ] **REP-001**: Integrate OpenStatz for performance reporting and reconcile relevant metrics against existing NautilusTrader native tearsheet outputs (`tearsheet.html`). Systematically identify and document any metric discrepancies.
+
+6. **Dashboard**
+   - [ ] **UI-001**: Develop user-facing interactive dashboard using finalized strategy results, trade histories, and native reporting artifacts.
 
 ---
 
@@ -27,4 +35,7 @@
 - [x] **IMP-007**: Implement strict per-CSV data validation (preserving missing values as NaNs, skipping corrupted files) and centralized logging (`configure_logging`).
 - [x] **IMP-008**: Implement causal event-driven month-end rebalance scheduler (`BaseRebalanceStrategy`, `MonthlyRebalanceStrategy`).
 - [x] **IMP-009**: Implement Nautilus execution rebalancer (`Rebalancer`) with live equity-based sizing and lot-size constraints.
-
+- [x] **IMP-010**: Implement Indian equity delivery fee model (`IndianEquityDeliveryFeeModel`) and slippage fill simulation (`SlippageFillModel`).
+- [x] **IMP-011**: Implement minimal base strategy template (`BaseStrategy`, `BaseStrategyConfig`) decoupling core execution configuration from strategy-specific logic.
+- [x] **IMP-012**: Implement capital-deployment risk management (`BaseRiskManager`, `FixedPercentageRiskManager`) and integrated deployment budget scaling into `Rebalancer`.
+- [x] **IMP-013**: Simplify `XGBoostRegressorStrategy` by removing custom recorder infrastructure, enforcing deterministic component configuration, and delegating reporting directly to `NautilusExporter`.

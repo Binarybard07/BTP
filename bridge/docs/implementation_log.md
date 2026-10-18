@@ -177,3 +177,83 @@
 - **INTERPRETATION**:
   - Execution layer is complete and ready to be integrated into an event-driven Nautilus `Strategy` subclass running on `BacktestEngine`.
 
+
+## Entry 011: Indian Equity Delivery Fee & Slippage Friction Models
+- **Date**: 2026-10-15
+- **Author**: Antigravity
+- **Files Created**:
+  - `src/equity_strategy/execution/__init__.py`
+  - `src/equity_strategy/execution/fees.py`: `IndianEquityDeliveryFeeModel`
+  - `src/equity_strategy/execution/slippage.py`: `SlippageFillModel`
+- **IMPLEMENTATION**:
+  - `IndianEquityDeliveryFeeModel`: Models realistic statutory NSE cash-delivery transaction charges, including brokerage (0.03% or ₹20/order cap), Securities Transaction Tax (STT at 0.1% on delivery buys and sells), NSE exchange transaction charges (0.00297%), SEBI turnover charges (₹10 per crore), stamp duty (0.015% on buys), and 18% GST on brokerage and transaction fees. Incorporates flat Depository Participant (DP) charges (₹15.93 per security per trading session) levied once per day on delivery sell trades.
+  - `SlippageFillModel`: Subclasses NautilusTrader `FillModel` to simulate adverse execution slippage on market orders. Synthesizes Level-1 MBP order book states with customizable tick offsets (`slippage_ticks`, default 1 tick = 0.05 INR), ensuring executed prices reflect realistic liquidity drag.
+- **RESULT**:
+  - Validated clean integration with Nautilus `BacktestEngineConfig` and `SimulatedExecutionClient`.
+- **INTERPRETATION**:
+  - Backtests now capture realistic Indian equity market frictions, eliminating zero-friction bias.
+
+## Entry 012: Minimal Base Strategy Template (BaseStrategy, BaseStrategyConfig)
+- **Date**: 2026-10-16
+- **Author**: Antigravity
+- **Files Modified**:
+  - `src/equity_strategy/strategies/base.py`: `BaseStrategy`, `BaseStrategyConfig`
+  - `src/equity_strategy/strategies/__init__.py`
+- **IMPLEMENTATION**:
+  - Minimal Boilerplate: Refactored `base.py` to contain exactly two public classes: `BaseStrategy` and `BaseStrategyConfig`.
+  - Shared Execution Config: `BaseStrategyConfig` defines strictly shared execution parameters (`bar_types`, `venue`, `currency`, `exchange_tz`).
+  - Standardized Lifecycle: `BaseStrategy` provides bar subscriptions during `on_start()` and calendar session date extraction (`_extract_session_date()`).
+  - Strict Decoupling: Removed strategy-specific parameters, runtime dataset holding, model/selector configurations, and arbitrary `kwargs` dynamic assignment from the base classes.
+- **RESULT**:
+  - Clean syntax compilation under Python 3.12 with pinned NautilusTrader 2.0.0rc5.
+- **INTERPRETATION**:
+  - Provides a clean, reusable foundation for event-driven multi-instrument Nautilus strategies.
+
+## Entry 013: Capital-Deployment Risk Management Architecture
+- **Date**: 2026-10-17
+- **Author**: Antigravity
+- **Files Created/Modified**:
+  - `src/equity_strategy/risk_management/__init__.py`
+  - `src/equity_strategy/risk_management/base.py`: `BaseRiskManager`
+  - `src/equity_strategy/risk_management/fixed_percentage.py`: `FixedPercentageRiskManager`
+  - `src/equity_strategy/rebalancing/rebalancer.py`: `Rebalancer`
+- **IMPLEMENTATION**:
+  - `BaseRiskManager`: Minimal abstract interface declaring `calculate_deployment_budget(portfolio_equity: Money) -> Money`.
+  - `FixedPercentageRiskManager`: Concrete implementation determining allowable deployment capital based on `max_deployment_pct` ($0.0 \le \text{max\_deployment\_pct} \le 1.0$), defaulting to 100% deployment if unspecified.
+  - Sizing Integration: Integrated risk manager into `Rebalancer.rebalance()`. Sizes target values against the deployment budget (`target_value = deployment_budget * weight`), ensuring unallocated cash remains unencumbered.
+  - Strict Target Weight Validation: Enforces that all target weights are non-negative ($w_i \ge 0.0$) and that total target weight does not exceed 100% (allowing small floating-point tolerance $\le 1.0001$).
+  - Scope Boundary: Capital deployment budgeting is complete for the current scope. Stop-losses, take-profits, drawdown halts, and per-position loss limits are deliberately excluded.
+- **RESULT**:
+  - Clean compilation and seamless interaction between portfolio equity, risk budgeting, and lot-size rounded order generation.
+- **INTERPRETATION**:
+  - Risk management is successfully established at the capital allocation level without coupling execution logic to arbitrary trading controls.
+
+## Entry 014: Deterministic Strategy Configuration & Component Injection
+- **Date**: 2026-10-17
+- **Author**: Antigravity
+- **Files Modified**:
+  - `src/equity_strategy/strategies/xgboost_regressor_strategy.py`
+- **IMPLEMENTATION**:
+  - Explicit Component Configuration: Replaced truthiness-based `or` fallbacks across component injection (`model`, `selector`, `portfolio`, `risk_manager`, `fee_model`, `fill_model`, `feature_columns`) with explicit `is None` checks.
+  - Preservation of User Components: Explicitly supplied component instances are used directly without being replaced by defaults. If omitted (`None`), clean default instances are initialized.
+  - Elimination of Kwargs Introspection: Removed dynamic `kwargs` loop iteration and `setattr` assignment. Parameters are strictly declared on configuration classes.
+  - Separation of Runtime Data: Runtime datasets are passed as explicit parameters to execution functions rather than stored on configuration objects.
+- **RESULT**:
+  - Deterministic strategy setup eliminating subtle configuration override bugs.
+- **INTERPRETATION**:
+  - Strategy configuration conforms to clean architecture principles and NautilusTrader configuration idioms.
+
+## Entry 015: Strategy Reporting Simplification & Recorder Decoupling
+- **Date**: 2026-10-17
+- **Author**: Antigravity
+- **Files Modified**:
+  - `src/equity_strategy/strategies/xgboost_regressor_strategy.py`
+- **IMPLEMENTATION**:
+  - Recorder Decoupling: Removed custom recorder infrastructure, recording-only hooks, and telemetry accumulators from `XGBoostRegressorStrategy`.
+  - Elimination of Redundant State Tracking: Removed internal lists and dictionaries accumulating predictions, selected tickers, target weights, and manifest initialization within the strategy file.
+  - Reporting Module Integrity: Left `src/equity_strategy/reporting/` completely intact for future reporting extensions without modifying its code.
+  - Native Reporting Delegation: Delegated backtest result persistence and tearsheet generation directly to `NautilusExporter`, generating standard Nautilus outputs (`orders.csv`, `positions.csv`, `account.csv`, `stats.csv`, `returns_series.csv`) and HTML tearsheets via `create_tearsheet()`.
+- **RESULT**:
+  - Drastic reduction in strategy code complexity while preserving comprehensive native performance analytics.
+- **INTERPRETATION**:
+  - Clear separation between strategy execution and performance analytics.
