@@ -1,18 +1,19 @@
 """
 Minimal reusable base strategy and configuration for equity trading on NautilusTrader.
 """
-from typing import Any, List
+from typing import Any, List, Optional
 import pandas as pd
 
 from nautilus_trader.model import BarType
 from nautilus_trader.trading import Strategy, StrategyConfig
 
-class BaseExecutionConfig(StrategyConfig):
+
+class BaseStrategyConfig(StrategyConfig):
     """
-    Minimal shared configuration for equity strategies.
+    Minimal shared execution configuration for equity strategies on NautilusTrader.
 
     Parameters:
-        bar_types: List of Nautilus BarType subscriptions for the active universe.
+        bar_types: Optional list of Nautilus BarType subscriptions for the active universe.
         venue: Exchange venue code (default: 'NSE').
         currency: Settlement currency (default: 'INR').
         exchange_tz: Exchange timezone identifier (default: 'Asia/Kolkata').
@@ -20,22 +21,19 @@ class BaseExecutionConfig(StrategyConfig):
 
     def __init__(
         self,
-        bar_types: List[BarType],
+        bar_types: Optional[List[BarType]] = None,
         venue: str = "NSE",
         currency: str = "INR",
         exchange_tz: str = "Asia/Kolkata",
-        **kwargs: Any,
     ) -> None:
         super().__init__()
-        self.bar_types = bar_types
-        self.venue = venue
-        self.currency = currency
-        self.exchange_tz = exchange_tz
-        for key, value in kwargs.items():
-            setattr(self, key, value)
+        self.bar_types: List[BarType] = bar_types if bar_types is not None else []
+        self.venue: str = venue
+        self.currency: str = currency
+        self.exchange_tz: str = exchange_tz
 
 
-class BaseExecutionStrategy(Strategy):
+class BaseStrategy(Strategy):
     """
     Minimal shared NautilusTrader strategy for equity strategies.
 
@@ -45,12 +43,12 @@ class BaseExecutionStrategy(Strategy):
     - Normalizes event timestamps to exchange session dates.
     """
 
-    def __init__(self, config: BaseExecutionConfig) -> None:
+    def __init__(self, config: BaseStrategyConfig) -> None:
         super().__init__(config=config)
-        self.bar_types: List[BarType] = getattr(config, "bar_types", [])
-        self.venue: str = getattr(config, "venue", "NSE")
-        self.currency: str = getattr(config, "currency", "INR")
-        self.exchange_tz: str = getattr(config, "exchange_tz", "Asia/Kolkata")
+        self.bar_types: List[BarType] = config.bar_types
+        self.venue: str = config.venue
+        self.currency: str = config.currency
+        self.exchange_tz: str = config.exchange_tz
 
     def on_start(self) -> None:
         """Nautilus lifecycle callback: subscribes to all configured bar types."""
@@ -66,5 +64,7 @@ class BaseExecutionStrategy(Strategy):
         return pd.Timestamp(pd.to_datetime(item).date())
 
 
-# Reusable alias for strategy authoring
-BaseStrategy = BaseExecutionStrategy
+__all__ = [
+    "BaseStrategy",
+    "BaseStrategyConfig",
+]
