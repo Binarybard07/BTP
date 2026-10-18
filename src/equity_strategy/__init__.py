@@ -7,6 +7,11 @@ from equity_strategy.rebalancing import (
     MonthlyRebalanceStrategy,
     Rebalancer,
 )
+from equity_strategy.trade_manager import (
+    ATRTradeManager,
+    BaseTradeManager,
+    FixedTPSLTradeManager,
+)
 
 __version__ = "0.1.0"
 
@@ -17,6 +22,9 @@ __all__ = [
     "BaseRebalanceStrategy",
     "MonthlyRebalanceStrategy",
     "Rebalancer",
+    "BaseTradeManager",
+    "FixedTPSLTradeManager",
+    "ATRTradeManager",
     "configure_logging",
     "__version__",
 ]
