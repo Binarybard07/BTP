@@ -18,7 +18,12 @@ from nautilus_trader.model import (
     InstrumentId,
     Money,
     OmsType,
+    OrderCanceled,
+    OrderCancelRejected,
     OrderFilled,
+    PositionChanged,
+    PositionClosed,
+    PositionOpened,
     TraderId,
     Venue,
 )
@@ -40,6 +45,7 @@ from equity_strategy.models.base import BaseModel
 from equity_strategy.models.xgboost_regressor import XGBoostRegressor
 from equity_strategy.portfolio.base import BasePortfolio
 from equity_strategy.portfolio.equal_weight import EqualWeightPortfolio
+from equity_strategy.position_manager import PositionManager
 from equity_strategy.rebalancing.rebalancer import Rebalancer
 from equity_strategy.reporting import NautilusExporter
 from equity_strategy.risk_management import BaseRiskManager, FixedPercentageRiskManager
@@ -48,6 +54,8 @@ from equity_strategy.selection.percentile import PercentileSelector
 from equity_strategy.selection.top_n import TopNSelector
 from equity_strategy.strategies.base import BaseStrategy, BaseStrategyConfig
 from equity_strategy.targets.engine import TargetEngine
+from equity_strategy.trade_manager import BaseTradeManager
+from equity_strategy.trade_manager.fixed import FixedTPSLTradeManager
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +83,8 @@ class XGBoostRegressorConfig(BaseStrategyConfig):
         risk_manager: Optional[BaseRiskManager] = None,
         fee_model: Optional[FeeModel] = None,
         fill_model: Optional[FillModel] = None,
+        trade_manager: Optional[BaseTradeManager] = None,
+        position_manager: Optional[PositionManager] = None,
         ordinary_charges_config: Optional[Any] = None,
         dp_charges_config: Optional[Any] = None,
         slippage_pct: Optional[float] = None,
@@ -96,6 +106,8 @@ class XGBoostRegressorConfig(BaseStrategyConfig):
         self.risk_manager = risk_manager
         self.fee_model = fee_model
         self.fill_model = fill_model
+        self.trade_manager = trade_manager
+        self.position_manager = position_manager
         self.ordinary_charges_config = ordinary_charges_config
         self.dp_charges_config = dp_charges_config
         self.slippage_pct = slippage_pct
@@ -170,6 +182,8 @@ class XGBoostRegressorStrategy(BaseStrategy):
         )
         self.fee_model: Optional[FeeModel] = config.fee_model
         self.fill_model: Optional[FillModel] = config.fill_model
+        self.trade_manager: Optional[BaseTradeManager] = config.trade_manager
+        self.position_manager: Optional[PositionManager] = config.position_manager
         self.rebalancer: Optional[Rebalancer] = None
 
         # Use the configured risk manager or default to 100% deployment.
@@ -190,6 +204,18 @@ class XGBoostRegressorStrategy(BaseStrategy):
         for bar_type in self.bar_types:
             self.subscribe_quotes(bar_type.instrument_id)
 
+        # Wire position manager with strategy runtime and trade manager
+        if self.position_manager is None and self.trade_manager is not None:
+            self.position_manager = PositionManager(
+                strategy=self,
+                trade_manager=self.trade_manager,
+            )
+        elif self.position_manager is not None:
+            self.position_manager.initialize(
+                strategy=self,
+                trade_manager=self.trade_manager,
+            )
+
         # Wire rebalancer with authoritative strategy risk manager
         self.rebalancer = Rebalancer(
             strategy=self,
@@ -206,10 +232,37 @@ class XGBoostRegressorStrategy(BaseStrategy):
             "XGBoostRegressorStrategy started with %d instruments.", len(self.bar_types)
         )
 
+    def on_position_opened(self, event: PositionOpened) -> None:
+        """Position opened callback: delegates protection setup to PositionManager."""
+        if self.position_manager is not None:
+            self.position_manager.on_position_opened(event)
+
+    def on_position_changed(self, event: PositionChanged) -> None:
+        """Position changed callback: delegates protection reconciliation to PositionManager."""
+        if self.position_manager is not None:
+            self.position_manager.on_position_changed(event)
+
+    def on_position_closed(self, event: PositionClosed) -> None:
+        """Position closed callback: delegates protection cancellation to PositionManager."""
+        if self.position_manager is not None:
+            self.position_manager.on_position_closed(event)
+
+    def on_order_canceled(self, event: OrderCanceled) -> None:
+        """Order canceled callback: handles asynchronous protection replacement."""
+        if self.position_manager is not None:
+            self.position_manager.on_order_canceled(event)
+
+    def on_order_cancel_rejected(self, event: OrderCancelRejected) -> None:
+        """Order cancel rejected callback: notifies PositionManager."""
+        if self.position_manager is not None:
+            self.position_manager.on_order_cancel_rejected(event)
+
     def on_order_filled(self, event: OrderFilled) -> None:
-        """Delegates fill reconciliation to slippage fill model if supported."""
+        """Delegates fill reconciliation to slippage fill model and PositionManager."""
         if self.fill_model is not None and hasattr(self.fill_model, "record_fill"):
             self.fill_model.record_fill(event)
+        if self.position_manager is not None:
+            self.position_manager.on_order_filled(event)
 
     def on_bar(self, bar: Bar) -> None:
         """
@@ -432,7 +485,7 @@ class XGBoostRegressorStrategy(BaseStrategy):
 
         if strat_config.fill_model is None:
             active_fill_model = SlippageFillModel(
-                config=SlippageConfig(
+                    config=SlippageConfig(
                     slippage_pct=(
                         strat_config.slippage_pct
                         if strat_config.slippage_pct is not None
@@ -606,9 +659,10 @@ if __name__ == "__main__":
     unique_id = data_source + "_" + pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
 
     config = XGBoostRegressorConfig(
-        min_train_days=252 * 4,
+        min_train_days=252,
         selector=PercentileSelector(percentile=85.0),
         risk_manager=FixedPercentageRiskManager(0.75),
+        trade_manager=FixedTPSLTradeManager(0.2, 0.1)
     )
 
     engine = XGBoostRegressorStrategy.run(
