@@ -33,8 +33,11 @@ from equity_strategy.data.strategy_data import StrategyDataPipeline
 from equity_strategy.data.training_dataset import (
     FEATURE_COLUMNS,
     TARGET_COLUMN,
+    OHLCV_COLUMNS,
     TrainingDatasetBuilder,
 )
+from equity_strategy.features.engine import FeatureEngine
+from equity_strategy.targets.engine import TargetEngine
 from equity_strategy.execution import (
     IndianEquityDeliveryFeeModel,
     PercentSlippage,
@@ -83,6 +86,9 @@ class XGBoostRegressorConfig(BaseStrategyConfig):
         fill_model: FillModel,
         target_column: str,
         feature_columns: List[str],
+        ohlcv_columns: List[str],
+        feature_engine: FeatureEngine,
+        target_engine: TargetEngine,
         venue: str = "NSE",
         currency: str = "INR",
         exchange_tz: str = "Asia/Kolkata",
@@ -104,11 +110,13 @@ class XGBoostRegressorConfig(BaseStrategyConfig):
         self.fill_model: FillModel = fill_model
         self.position_manager: Optional[PositionManager] = position_manager
         self.tax_module: Optional[IndianEquityTaxModule] = tax_module
-
         self.min_train_days: int = int(min_train_days)
         self.target_horizon: int = int(target_horizon)
         self.target_column: str = target_column
         self.feature_columns: List[str] = list(feature_columns)
+        self.ohlcv_columns: List[str] = list(ohlcv_columns)
+        self.feature_engine: FeatureEngine = feature_engine
+        self.target_engine: TargetEngine = target_engine
 
 
 class XGBoostRegressorStrategy(BaseStrategy):
@@ -164,6 +172,9 @@ class XGBoostRegressorStrategy(BaseStrategy):
         self.feature_columns: List[str] = config.feature_columns
         self.target_horizon: int = config.target_horizon
         self.target_column: str = config.target_column
+        self.ohlcv_columns: List[str] = list(config.ohlcv_columns)
+        self.feature_engine: FeatureEngine = config.feature_engine
+        self.target_engine: TargetEngine = config.target_engine
         self.min_train_days: int = config.min_train_days
 
         self.model_prototype: BaseModel = config.model
@@ -407,6 +418,9 @@ class XGBoostRegressorStrategy(BaseStrategy):
         target_horizon = strat_config.target_horizon
         target_column = strat_config.target_column
         f_cols = strat_config.feature_columns
+        ohlcv_columns = strat_config.ohlcv_columns
+        target_engine = strat_config.target_engine
+        feature_engine = strat_config.feature_engine
 
         items_to_process: List[Tuple[Union[str, pathlib.Path, pd.DataFrame], Optional[str]]] = []
         if isinstance(data_source, pd.DataFrame):
@@ -537,7 +551,10 @@ class XGBoostRegressorStrategy(BaseStrategy):
 
         builder = TrainingDatasetBuilder(
             feature_columns=f_cols,
+            ohlcv_columns=ohlcv_columns,
             target_column=target_column,
+            feature_engine=feature_engine,
+            target_engine=target_engine
         )
         training_df = builder.build(targeted_df)
         training_df["Date"] = pd.to_datetime(training_df["Date"])
@@ -626,6 +643,9 @@ if __name__ == "__main__":
     fill_model = SlippageFillModel(method=PercentSlippage(0.0005))
     features = FEATURE_COLUMNS
     targets = TARGET_COLUMN
+    ohlcv_columns = OHLCV_COLUMNS
+    feature_engine = FeatureEngine()
+    target_engine = TargetEngine()
 
     config = XGBoostRegressorConfig(
         min_train_days=252,
@@ -638,7 +658,10 @@ if __name__ == "__main__":
         fee_model=fee_model,
         fill_model=fill_model,
         feature_columns=features,
-        target_column=targets
+        target_column=targets,
+        ohlcv_columns=ohlcv_columns,
+        feature_engine=feature_engine,
+        target_engine=target_engine
     )
 
     engine = XGBoostRegressorStrategy.run(
