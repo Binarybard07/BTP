@@ -56,7 +56,6 @@ from equity_strategy.selection.base import BaseSelector
 from equity_strategy.selection.percentile import PercentileSelector
 from equity_strategy.selection.top_n import TopNSelector
 from equity_strategy.strategies.base import BaseStrategy, BaseStrategyConfig
-from equity_strategy.targets.engine import TargetEngine
 from equity_strategy.tax import IndianEquityTaxModule
 from equity_strategy.trade_manager import (
     ATRTradeManager,
@@ -545,18 +544,14 @@ class XGBoostRegressorStrategy(BaseStrategy):
                 f"Configured feature_columns missing from featured data: {missing_features}"
             )
 
-        target_eng = TargetEngine(horizon=target_horizon, target_col=target_column)
-        targeted_df = target_eng.transform(combined_featured_df)
-        targeted_df["Date"] = pd.to_datetime(targeted_df["Date"])
-
         builder = TrainingDatasetBuilder(
             feature_columns=f_cols,
             ohlcv_columns=ohlcv_columns,
             target_column=target_column,
             feature_engine=feature_engine,
-            target_engine=target_engine
+            target_engine=target_engine,
         )
-        training_df = builder.build(targeted_df)
+        training_df = builder.build(combined_featured_df)
         training_df["Date"] = pd.to_datetime(training_df["Date"])
 
         all_trading_dates = (
@@ -645,7 +640,7 @@ if __name__ == "__main__":
     targets = TARGET_COLUMN
     ohlcv_columns = OHLCV_COLUMNS
     feature_engine = FeatureEngine()
-    target_engine = TargetEngine()
+    target_engine = TargetEngine(horizon=10, target_col=targets)
 
     config = XGBoostRegressorConfig(
         min_train_days=252,
