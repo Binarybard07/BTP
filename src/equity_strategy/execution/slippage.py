@@ -1,5 +1,4 @@
 import abc
-from dataclasses import dataclass
 import logging
 import math
 from typing import Any, Dict, Optional
@@ -62,7 +61,11 @@ class ZeroSlippage(SlippageMethod):
 
     def calculate_adjusted_price(
         self,
-        reference_price: float
+        reference_price: float,
+        is_buy: bool,
+        instrument: Any,
+        best_bid: float,
+        best_ask: float,
     ) -> float:
         return reference_price
 
@@ -81,7 +84,10 @@ class PercentSlippage(SlippageMethod):
     def calculate_adjusted_price(
         self,
         reference_price: float,
-        is_buy: bool
+        is_buy: bool,
+        instrument: Any,
+        best_bid: float,
+        best_ask: float,
     ) -> float:
         if self.slippage_pct <= 0.0:
             return reference_price
@@ -105,7 +111,9 @@ class FixedTickSlippage(SlippageMethod):
         self,
         reference_price: float,
         is_buy: bool,
-        instrument: Any
+        instrument: Any,
+        best_bid: float,
+        best_ask: float,
     ) -> float:
         increment = float(getattr(instrument, "price_increment", None) or 0.05)
         tick_delta = self.ticks * increment
@@ -129,6 +137,7 @@ class SpreadSlippage(SlippageMethod):
         self,
         reference_price: float,
         is_buy: bool,
+        instrument: Any,
         best_bid: float,
         best_ask: float,
     ) -> float:
@@ -140,25 +149,7 @@ class SpreadSlippage(SlippageMethod):
 
 
 # ---------------------------------------------------------------------------
-# 2. Configuration Wrapper (Backward-Compatible)
-# ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class SlippageConfig:
-    """
-    Configuration parameters for execution slippage simulation.
-
-    Parameters:
-        slippage_pct: Adverse percentage slippage per side (default: 0.0005 = 5 bps).
-        enabled: Toggle to enable or bypass slippage simulation.
-    """
-
-    slippage_pct: float = 0.0005
-    enabled: bool = True
-
-
-# ---------------------------------------------------------------------------
-# 3. Modular NautilusTrader FillModel Integration
+# 2. Modular NautilusTrader FillModel Integration
 # ---------------------------------------------------------------------------
 
 class SlippageFillModel(FillModel):
@@ -174,29 +165,15 @@ class SlippageFillModel(FillModel):
     5. Raises explicit errors when reference price metadata is missing instead of silent zero fallback.
     """
 
-    def __new__(cls) -> "SlippageFillModel":
+    def __new__(cls, *args: Any, **kwargs: Any) -> "SlippageFillModel":
         return super().__new__(cls)
 
     def __init__(
         self,
         method: Optional[SlippageMethod] = None,
-        *,
-        config: Optional[SlippageConfig] = None,
-        slippage_pct: Optional[float] = None
     ) -> None:
         super().__init__()
-
-        # Resolve SlippageMethod from parameters
-        if method is not None:
-            self.method = method
-        elif config is not None and not config.enabled:
-            self.method = ZeroSlippage()
-        elif slippage_pct is not None:
-            self.method = PercentSlippage(slippage_pct) if slippage_pct > 0.0 else ZeroSlippage()
-        elif config is not None:
-            self.method = PercentSlippage(config.slippage_pct) if config.slippage_pct > 0.0 else ZeroSlippage()
-        else:
-            self.method = PercentSlippage(0.0005)
+        self.method: SlippageMethod = method if method is not None else PercentSlippage()
 
         # Minimal reference-price metadata:
         # 1. client_order_id -> un-slipped reference price (set during book simulation)

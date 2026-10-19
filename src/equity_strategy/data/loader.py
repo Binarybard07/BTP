@@ -21,7 +21,7 @@ class CSVDataLoader:
         validator: Optional[DataValidator] = None,
     ):
         self.data_dir = pathlib.Path(data_dir)
-        self.validator = validator or DataValidator()
+        self.validator = validator if validator is not None else DataValidator()
         self.skipped_files: List[Tuple[str, str]] = []
         self.invalid_files: Dict[str, str] = {}
 

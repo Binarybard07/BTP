@@ -10,8 +10,6 @@ from equity_strategy.execution.fee_model import (
     IndianEquityDeliveryFeeModel,
 )
 from equity_strategy.execution.slippage import (
-    SlippageConfig,
-    SlippageFillModel,
     FixedTickSlippage,
     PercentSlippage,
     SlippageFillModel,
@@ -37,5 +35,4 @@ __all__ = [
     "FixedTickSlippage",
     "SpreadSlippage",
     "SlippageFillModel",
-    "SlippageConfig",
 ]

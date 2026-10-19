@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Optional
 import pandas as pd
 
 from equity_strategy.targets.returns import compute_future_returns
@@ -12,16 +12,14 @@ class TargetEngine:
 
     def __init__(
         self,
-        config: Optional[Dict[str, Any]] = None,
-        horizon: Optional[int] = None,
+        horizon: int = 10,
         target_col: Optional[str] = None,
-    ):
-        cfg = config.get("targets", {}) if config and "targets" in config else (config or {})
-        self.horizon: int = horizon if horizon is not None else cfg.get("horizon", 10)
+    ) -> None:
+        self.horizon: int = horizon
         self.target_col: str = (
             target_col
             if target_col is not None
-            else cfg.get("target_col", f"target_{self.horizon}d")
+            else f"target_{self.horizon}d"
         )
 
     def _compute_symbol_targets(self, df_symbol: pd.DataFrame) -> pd.DataFrame:

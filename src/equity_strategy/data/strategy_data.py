@@ -1,6 +1,6 @@
 import pathlib
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Union
+from typing import List, Optional, Union
 import pandas as pd
 
 from nautilus_trader.model import Bar, BarType, Equity, QuoteTick
@@ -45,12 +45,11 @@ class StrategyDataPipeline:
 
     def __init__(
         self,
-        feature_config: Optional[Dict[str, Any]] = None,
+        feature_engine: Optional[FeatureEngine] = None,
         converter: Optional[NautilusDataConverter] = None,
-    ):
-        self.feature_config = feature_config
-        self.feature_engine = FeatureEngine(self.feature_config)
-        self.converter = converter or NautilusDataConverter()
+    ) -> None:
+        self.feature_engine = feature_engine if feature_engine is not None else FeatureEngine()
+        self.converter = converter if converter is not None else NautilusDataConverter()
 
     def prepare(
         self,

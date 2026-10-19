@@ -46,19 +46,15 @@ class IndianEquityDeliveryFeeModel(FeeModel):
        - Retains itemised charge breakdowns for calculation verification without duplicating order ledgers.
     """
 
-    def __new__(cls, *args: Any, **kwargs: Any) -> "IndianEquityDeliveryFeeModel":
-        return super().__new__(cls)
-
     def __init__(
         self,
         ordinary_config: Optional[OrdinaryChargesConfig] = None,
         dp_config: Optional[DPChargesConfig] = None,
         exchange_tz: str = "Asia/Kolkata",
-        **kwargs: Any,
     ) -> None:
         super().__init__()
-        self.ordinary_config = ordinary_config or OrdinaryChargesConfig()
-        self.dp_config = dp_config or DPChargesConfig()
+        self.ordinary_config = ordinary_config if ordinary_config is not None else OrdinaryChargesConfig()
+        self.dp_config = dp_config if dp_config is not None else DPChargesConfig()
         self.exchange_tz = exchange_tz
         self.clock: Optional[Any] = None
 

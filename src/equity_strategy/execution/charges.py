@@ -70,7 +70,7 @@ class OrdinaryChargesCalculator:
     """
 
     def __init__(self, config: Optional[OrdinaryChargesConfig] = None):
-        self.config = config or OrdinaryChargesConfig()
+        self.config = config if config is not None else OrdinaryChargesConfig()
 
     def calculate(
         self,
@@ -159,7 +159,7 @@ class DPChargesTracker:
     """
 
     def __init__(self, config: Optional[DPChargesConfig] = None):
-        self.config = config or DPChargesConfig()
+        self.config = config if config is not None else DPChargesConfig()
         # Mapping: date -> set of debited security identifiers (ISIN or symbol) for that date
         self._debited_by_date: Dict[datetime.date, Set[str]] = {}
 

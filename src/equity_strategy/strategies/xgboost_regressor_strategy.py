@@ -37,7 +37,7 @@ from equity_strategy.data.training_dataset import (
 )
 from equity_strategy.execution import (
     IndianEquityDeliveryFeeModel,
-    SlippageConfig,
+    PercentSlippage,
     SlippageFillModel,
 )
 from equity_strategy.logging_config import configure_logging
@@ -54,7 +54,11 @@ from equity_strategy.selection.percentile import PercentileSelector
 from equity_strategy.selection.top_n import TopNSelector
 from equity_strategy.strategies.base import BaseStrategy, BaseStrategyConfig
 from equity_strategy.targets.engine import TargetEngine
-from equity_strategy.trade_manager import BaseTradeManager
+from equity_strategy.trade_manager import (
+    ATRTradeManager,
+    BaseTradeManager,
+    FixedTPSLTradeManager,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,10 +88,6 @@ class XGBoostRegressorConfig(BaseStrategyConfig):
         fill_model: Optional[FillModel] = None,
         trade_manager: Optional[BaseTradeManager] = None,
         position_manager: Optional[PositionManager] = None,
-        ordinary_charges_config: Optional[Any] = None,
-        dp_charges_config: Optional[Any] = None,
-        slippage_pct: Optional[float] = None,
-        enable_slippage: Optional[bool] = None,
     ) -> None:
         super().__init__(
             bar_types=bar_types,
@@ -95,22 +95,28 @@ class XGBoostRegressorConfig(BaseStrategyConfig):
             currency=currency,
             exchange_tz=exchange_tz,
         )
-        self.min_train_days = min_train_days
-        self.target_horizon = target_horizon
-        self.target_column = target_column
-        self.feature_columns = feature_columns
-        self.model = model
-        self.selector = selector
-        self.portfolio = portfolio
-        self.risk_manager = risk_manager
-        self.fee_model = fee_model
-        self.fill_model = fill_model
-        self.trade_manager = trade_manager
-        self.position_manager = position_manager
-        self.ordinary_charges_config = ordinary_charges_config
-        self.dp_charges_config = dp_charges_config
-        self.slippage_pct = slippage_pct
-        self.enable_slippage = enable_slippage
+        self.min_train_days: int = min_train_days
+        self.target_horizon: int = target_horizon
+        self.target_column: str = target_column
+        self.feature_columns: List[str] = (
+            list(feature_columns) if feature_columns is not None else list(FEATURE_COLUMNS)
+        )
+        self.model: BaseModel = model if model is not None else XGBoostRegressor()
+        self.selector: BaseSelector = selector if selector is not None else TopNSelector()
+        self.portfolio: BasePortfolio = (
+            portfolio if portfolio is not None else EqualWeightPortfolio()
+        )
+        self.risk_manager: BaseRiskManager = (
+            risk_manager if risk_manager is not None else FixedPercentageRiskManager(1.0)
+        )
+        self.fee_model: FeeModel = (
+            fee_model if fee_model is not None else IndianEquityDeliveryFeeModel()
+        )
+        self.fill_model: FillModel = (
+            fill_model if fill_model is not None else SlippageFillModel()
+        )
+        self.trade_manager: Optional[BaseTradeManager] = trade_manager
+        self.position_manager: Optional[PositionManager] = position_manager
 
 
 class XGBoostRegressorStrategy(BaseStrategy):
@@ -136,6 +142,7 @@ class XGBoostRegressorStrategy(BaseStrategy):
     def __new__(
         cls,
         config: XGBoostRegressorConfig,
+        *args: Any,
         **kwargs: Any,
     ) -> "XGBoostRegressorStrategy":
         return super().__new__(cls, config=config)
@@ -161,35 +168,20 @@ class XGBoostRegressorStrategy(BaseStrategy):
         }
         self._latest_prices: Dict[InstrumentId, float] = {}
 
-        if config.feature_columns is None:
-            self.feature_columns: List[str] = list(FEATURE_COLUMNS)
-        else:
-            self.feature_columns = list(config.feature_columns)
-
+        self.feature_columns: List[str] = config.feature_columns
         self.target_horizon: int = config.target_horizon
         self.target_column: str = config.target_column
         self.min_train_days: int = config.min_train_days
 
-        self.model_prototype: BaseModel = (
-            XGBoostRegressor() if config.model is None else config.model
-        )
-        self.selector: BaseSelector = (
-            TopNSelector() if config.selector is None else config.selector
-        )
-        self.portfolio_constructor: BasePortfolio = (
-            EqualWeightPortfolio() if config.portfolio is None else config.portfolio
-        )
-        self.fee_model: Optional[FeeModel] = config.fee_model
-        self.fill_model: Optional[FillModel] = config.fill_model
+        self.model_prototype: BaseModel = config.model
+        self.selector: BaseSelector = config.selector
+        self.portfolio_constructor: BasePortfolio = config.portfolio
+        self.risk_manager: BaseRiskManager = config.risk_manager
+        self.fee_model: FeeModel = config.fee_model
+        self.fill_model: FillModel = config.fill_model
         self.trade_manager: Optional[BaseTradeManager] = config.trade_manager
         self.position_manager: Optional[PositionManager] = config.position_manager
         self.rebalancer: Optional[Rebalancer] = None
-
-        # Use the configured risk manager or default to 100% deployment.
-        if config.risk_manager is not None:
-            self.risk_manager: BaseRiskManager = config.risk_manager
-        else:
-            self.risk_manager = FixedPercentageRiskManager(1.0)
 
         # Multi-instrument synchronization and decision tracking
         self._session_reported_bars: Dict[pd.Timestamp, Set[InstrumentId]] = {}
@@ -208,12 +200,7 @@ class XGBoostRegressorStrategy(BaseStrategy):
             self.trade_manager.register(self, self.bar_types)
 
         # Wire position manager with strategy runtime and trade manager
-        if self.position_manager is None and self.trade_manager is not None:
-            self.position_manager = PositionManager(
-                strategy=self,
-                trade_manager=self.trade_manager,
-            )
-        elif self.position_manager is not None:
+        if self.position_manager is not None:
             self.position_manager.initialize(
                 strategy=self,
                 trade_manager=self.trade_manager,
@@ -426,10 +413,7 @@ class XGBoostRegressorStrategy(BaseStrategy):
         unique_id = "001" if unique_id is None else unique_id
         target_horizon = strat_config.target_horizon
         target_column = strat_config.target_column
-        if strat_config.feature_columns is None:
-            f_cols = list(FEATURE_COLUMNS)
-        else:
-            f_cols = list(strat_config.feature_columns)
+        f_cols = strat_config.feature_columns
 
         items_to_process: List[Tuple[Union[str, pathlib.Path, pd.DataFrame], Optional[str]]] = []
         if isinstance(data_source, pd.DataFrame):
@@ -478,39 +462,13 @@ class XGBoostRegressorStrategy(BaseStrategy):
             cfg = engine_config
         engine = BacktestEngine(config=cfg)
 
-        if strat_config.fee_model is None:
-            active_fee_model = IndianEquityDeliveryFeeModel(
-                ordinary_config=strat_config.ordinary_charges_config,
-                dp_config=strat_config.dp_charges_config,
-            )
-        else:
-            active_fee_model = strat_config.fee_model
-
-        if strat_config.fill_model is None:
-            active_fill_model = SlippageFillModel(
-                config=SlippageConfig(
-                    slippage_pct=(
-                        strat_config.slippage_pct
-                        if strat_config.slippage_pct is not None
-                        else SlippageConfig.slippage_pct
-                    ),
-                    enabled=(
-                        strat_config.enable_slippage
-                        if strat_config.enable_slippage is not None
-                        else SlippageConfig.enabled
-                    ),
-                ),
-            )
-        else:
-            active_fill_model = strat_config.fill_model
-
         engine.add_venue(
             venue=Venue(venue),
             oms_type=OmsType.NETTING,
             account_type=AccountType.CASH,
             starting_balances=[Money(starting_balance, Currency.from_str(currency))],
-            fee_model=active_fee_model,
-            fill_model=active_fill_model,
+            fee_model=strat_config.fee_model,
+            fill_model=strat_config.fill_model,
             latency_model=StaticLatencyModel(insert_latency_nanos=1_000_000),
         )
 
@@ -661,10 +619,26 @@ if __name__ == "__main__":
     logger.info("Starting XGBoost Regressor Strategy Backtest...")
     unique_id = data_source + "_" + pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
 
+    # Configure components explicitly at the application entry point
+    model = XGBoostRegressor()
+    selector = PercentileSelector(percentile=85.0)
+    portfolio = EqualWeightPortfolio()
+    risk_manager = FixedPercentageRiskManager(max_deployment_pct=0.75)
+    trade_manager = FixedTPSLTradeManager(take_profit_pct=0.10, stop_loss_pct=0.05)
+    position_manager = PositionManager(trade_manager=trade_manager)
+    fee_model = IndianEquityDeliveryFeeModel()
+    fill_model = SlippageFillModel(method=PercentSlippage(0.0005))
+
     config = XGBoostRegressorConfig(
-        min_train_days=252 * 4,
-        selector=PercentileSelector(percentile=85.0),
-        risk_manager=FixedPercentageRiskManager(0.75),
+        min_train_days=252,
+        model=model,
+        selector=selector,
+        portfolio=portfolio,
+        risk_manager=risk_manager,
+        trade_manager=trade_manager,
+        position_manager=position_manager,
+        fee_model=fee_model,
+        fill_model=fill_model,
     )
 
     engine = XGBoostRegressorStrategy.run(

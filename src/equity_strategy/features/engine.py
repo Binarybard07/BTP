@@ -1,4 +1,3 @@
-from typing import Dict, Any, Optional
 import pandas as pd
 
 from equity_strategy.features.momentum import compute_momentum_features
@@ -10,14 +9,21 @@ class FeatureEngine:
     Applies modular feature computations per symbol without mixing data across symbols.
     """
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        cfg = config.get("features", {}) if config else {}
-        self.momentum_short = cfg.get("momentum_short", 21)
-        self.momentum_medium = cfg.get("momentum_medium", 63)
-        self.momentum_long = cfg.get("momentum_long", 252)
-        self.moving_average_short = cfg.get("moving_average_short", 50)
-        self.moving_average_long = cfg.get("moving_average_long", 200)
-        self.volatility_window = cfg.get("volatility_window", 21)
+    def __init__(
+        self,
+        momentum_short: int = 21,
+        momentum_medium: int = 63,
+        momentum_long: int = 252,
+        moving_average_short: int = 50,
+        moving_average_long: int = 200,
+        volatility_window: int = 21,
+    ) -> None:
+        self.momentum_short = momentum_short
+        self.momentum_medium = momentum_medium
+        self.momentum_long = momentum_long
+        self.moving_average_short = moving_average_short
+        self.moving_average_long = moving_average_long
+        self.volatility_window = volatility_window
 
     def _compute_symbol_features(self, df_symbol: pd.DataFrame) -> pd.DataFrame:
         """Computes all features for a single symbol DataFrame sorted by Date."""

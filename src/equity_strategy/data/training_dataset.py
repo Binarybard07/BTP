@@ -56,14 +56,14 @@ class TrainingDatasetBuilder:
     ):
         # Keep feature_columns explicitly separate as the model-input feature list
         self.feature_columns: List[str] = (
-            feature_columns or list(self.DEFAULT_FEATURE_COLUMNS)
+            list(feature_columns) if feature_columns is not None else list(self.DEFAULT_FEATURE_COLUMNS)
         )
         self.ohlcv_columns: List[str] = (
-            ohlcv_columns or list(self.DEFAULT_OHLCV_COLUMNS)
+            list(ohlcv_columns) if ohlcv_columns is not None else list(self.DEFAULT_OHLCV_COLUMNS)
         )
-        self.target_column: str = target_column or self.DEFAULT_TARGET_COLUMN
-        self.feature_engine: FeatureEngine = feature_engine or FeatureEngine()
-        self.target_engine: TargetEngine = target_engine or TargetEngine(
+        self.target_column: str = target_column if target_column is not None else self.DEFAULT_TARGET_COLUMN
+        self.feature_engine: FeatureEngine = feature_engine if feature_engine is not None else FeatureEngine()
+        self.target_engine: TargetEngine = target_engine if target_engine is not None else TargetEngine(
             horizon=10, target_col=self.target_column
         )
 
