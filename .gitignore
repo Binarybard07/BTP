@@ -19,3 +19,4 @@ wheels/
 *.json
 Resources/
 nautilus_trader/
+Backtest_Module/
