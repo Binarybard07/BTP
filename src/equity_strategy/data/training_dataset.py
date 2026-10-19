@@ -1,9 +1,6 @@
-import pathlib
-from typing import List, Optional, Union
+from typing import List, Optional
 import numpy as np
 import pandas as pd
-
-from equity_strategy.data.loader import CSVDataLoader
 from equity_strategy.features.engine import FeatureEngine
 from equity_strategy.targets.engine import TargetEngine
 
@@ -42,54 +39,38 @@ class TrainingDatasetBuilder:
     Rows with NaN, missing, or inf values in any required column are dropped.
     """
 
-    DEFAULT_OHLCV_COLUMNS: List[str] = list(OHLCV_COLUMNS)
-    DEFAULT_FEATURE_COLUMNS: List[str] = list(FEATURE_COLUMNS)
-    DEFAULT_TARGET_COLUMN: str = TARGET_COLUMN
-
     def __init__(
         self,
-        feature_columns: Optional[List[str]] = None,
-        ohlcv_columns: Optional[List[str]] = None,
-        target_column: Optional[str] = None,
-        feature_engine: Optional[FeatureEngine] = None,
-        target_engine: Optional[TargetEngine] = None,
+        feature_columns: List[str],
+        ohlcv_columns: List[str],
+        target_column: str,
+        feature_engine: FeatureEngine,
+        target_engine: TargetEngine
     ):
         # Keep feature_columns explicitly separate as the model-input feature list
-        self.feature_columns: List[str] = (
-            list(feature_columns) if feature_columns is not None else list(self.DEFAULT_FEATURE_COLUMNS)
-        )
-        self.ohlcv_columns: List[str] = (
-            list(ohlcv_columns) if ohlcv_columns is not None else list(self.DEFAULT_OHLCV_COLUMNS)
-        )
-        self.target_column: str = target_column if target_column is not None else self.DEFAULT_TARGET_COLUMN
-        self.feature_engine: FeatureEngine = feature_engine if feature_engine is not None else FeatureEngine()
-        self.target_engine: TargetEngine = target_engine if target_engine is not None else TargetEngine(
-            horizon=10, target_col=self.target_column
-        )
+        self.feature_columns = list(feature_columns)
+        self.ohlcv_columns = list(ohlcv_columns)
+        self.target_column = target_column 
+        self.feature_engine = feature_engine
+        self.target_engine = target_engine
 
     def build(
         self,
-        data: Union[pd.DataFrame, str, pathlib.Path],
+        data: pd.DataFrame,
         targets_df: Optional[pd.DataFrame] = None,
     ) -> pd.DataFrame:
         """
         Builds the clean training dataset.
 
         Parameters:
-            data: DataFrame (raw, featured, or featured+targeted), or path to CSV/directory.
+            data: DataFrame (raw, featured, or featured+targeted).
             targets_df: Optional precomputed targets DataFrame to merge with data.
 
         Returns:
             pd.DataFrame: Clean dataset containing Date, Symbol, OHLCV, the six features, and target_10d.
         """
         # Step 1: Ingest data
-        if isinstance(data, (str, pathlib.Path)):
-            loader = CSVDataLoader(data)
-            df = loader.load_data(validate=True)
-        elif isinstance(data, pd.DataFrame):
-            df = data.copy()
-        else:
-            raise TypeError(f"Unsupported data type for 'data': {type(data)}")
+        df = data.copy()
 
         if df.empty:
             return pd.DataFrame(columns=self.dataset_columns)
@@ -105,19 +86,27 @@ class TrainingDatasetBuilder:
                 raise ValueError(
                     f"Target column '{self.target_column}' not found in provided targets_df."
                 )
+            
+            if self.target_column in df.columns:
+                raise ValueError(
+                    f"Input data already contains '{self.target_column}'. "
+                    "Pass either targeted data or targets_df, not both."
+                )
 
-            # Determine merge keys
-            merge_keys = [
-                col for col in ["Symbol", "Date"] if col in df.columns and col in targets_df.columns
-            ]
-            if not merge_keys and "Date" in df.columns and "Date" in targets_df.columns:
-                merge_keys = ["Date"]
+            merge_keys = ["Symbol", "Date"]
 
-            if merge_keys:
-                cols_to_merge = list(dict.fromkeys(merge_keys + [self.target_column]))
-                df = pd.merge(df, targets_df[cols_to_merge], on=merge_keys, how="inner")
-            else:
-                df[self.target_column] = targets_df[self.target_column].values
+            if not all(
+                col in df.columns and col in targets_df.columns
+                for col in merge_keys
+            ):
+                raise ValueError(
+                    "Both data and targets_df must contain 'Symbol' and 'Date' "
+                    "to align targets correctly."
+                )
+            
+            cols_to_merge = merge_keys + [self.target_column]
+            df = pd.merge(df, targets_df[cols_to_merge], on=merge_keys, how="inner")
+
         else:
             if self.target_column not in df.columns:
                 df = self.target_engine.transform(df)
@@ -143,25 +132,25 @@ class TrainingDatasetBuilder:
 
 
 def build_training_dataset(
-    data: Union[pd.DataFrame, str, pathlib.Path],
+    data: pd.DataFrame,
+    feature_columns: List[str],
+    ohlcv_columns: List[str],
+    target_column: str,
+    feature_engine: FeatureEngine,
+    target_engine: TargetEngine,
     targets_df: Optional[pd.DataFrame] = None,
-    feature_columns: Optional[List[str]] = None,
-    ohlcv_columns: Optional[List[str]] = None,
-    target_column: Optional[str] = None,
-    feature_engine: Optional[FeatureEngine] = None,
-    target_engine: Optional[TargetEngine] = None,
 ) -> pd.DataFrame:
     """
     Convenience function to build a clean training dataset combining features and target.
 
     Parameters:
-        data: DataFrame or path to CSV/directory.
-        targets_df: Optional precomputed targets DataFrame.
-        feature_columns: Optional list of model-input feature column names.
-        ohlcv_columns: Optional list of OHLCV column names.
-        target_column: Optional target column name (default: 'target_10d').
-        feature_engine: Optional FeatureEngine instance.
-        target_engine: Optional TargetEngine instance.
+        data: DataFrame
+        feature_columns: Required List of model-input feature column names.
+        ohlcv_columns: Required List of OHLCV column names.
+        target_column: Required Target column name.
+        feature_engine: Required FeatureEngine instance.
+        target_engine: Required TargetEngine instance.
+        targets_df: Precomputed targets DataFrame.
 
     Returns:
         pd.DataFrame: Clean dataset containing Date, Symbol, OHLCV, features, and target.
