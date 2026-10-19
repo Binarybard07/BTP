@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qbeast-backtest"
+version = "1.0.0"
+description = "A three-module equity backtest framework where only the strategy changes: shared data, tradability, costs, tax and execution."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [{ name = "QBEAST" }]
+
+# NautilusTrader is NOT a hard requirement: the internal ledger runs without it, and that is the fast
+# path every research sweep uses. Install the `nautilus` extra for the source-of-record engine.
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    # patsy WAS required here, for the removed reference strategy's penalised-spline trend gates.
+    # Nothing in this bundle imports it any more, so asking a recipient to install it would be telling
+    # them to carry a dependency for code that is not here.
+    # dashboard.py imports plotly at module level, and dashboard.html is the report people actually
+    # open - so this is a hard dependency, not an extra. Without it a fresh install still runs and
+    # still writes equity.csv / the books, but report.write() prints "dashboard.html could not be
+    # written: ModuleNotFoundError: plotly" and the headline deliverable is missing.
+    "plotly>=5.0",
+]
+
+[project.optional-dependencies]
+nautilus = ["nautilus_trader>=1.190"]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+# `qbeast-backtest` is the whole run: stage 1 -> 2 -> 3, then the result table.
+qbeast-backtest = "qbeast_backtest.pipeline:main"
+# the contract conformance suite - run it after touching a stage boundary
+qbeast-backtest-selftest = "qbeast_backtest.selftest:main"
+# compare against a Backtest_Core checkout, when one is present (optional tool)
+qbeast-backtest-reconcile = "qbeast_backtest.reconcile:main"
+# the shared library's own arithmetic suite (charges, slippage, tax, bands, staircase)
+qbeast-exec-selftest = "qbeast_exec.selftest:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+# TWO top-level packages, deliberately.
+#   qbeast_backtest  the framework (contracts, pipeline, the three stages, the certified maths)
+#   qbeast_exec      the SHARED team library: charges, slippage, tax, price bands, the staircase gate,
+#                    survivorship, the Nautilus harness and reporting.
+# qbeast_exec is top-level rather than nested so that a strategy, a paper-trading book or a live
+# adapter can `import qbeast_exec` while knowing nothing about this framework. One implementation of
+# what a trade costs and what tax it owes, read by everything.
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["qbeast_backtest*", "qbeast_exec*"]
+
+[tool.setuptools.package-data]
+qbeast_exec = ["*.md"]
