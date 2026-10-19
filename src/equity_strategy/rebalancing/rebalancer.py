@@ -117,7 +117,6 @@ class Rebalancer:
         Parameters:
             target_weights: Mapping from InstrumentId/symbol to target portfolio weight (e.g. 0.05).
             current_prices: Mapping from InstrumentId/symbol to current market price.
-            instruments: Optional mapping from InstrumentId/symbol to Instrument metadata.
 
         Returns:
             List[MarketOrder]: Chronological list of submitted market orders (SELLs first, then BUYs).
