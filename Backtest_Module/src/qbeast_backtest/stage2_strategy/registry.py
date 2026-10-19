@@ -20,9 +20,13 @@ Add yours:
 """
 from __future__ import annotations
 
-REGISTRY: dict = {}
+from .xgboost_regressor_strategy import XGBoostRegressorStrategy
 
-DEFAULT = None
+REGISTRY: dict = {
+    XGBoostRegressorStrategy.name: XGBoostRegressorStrategy,
+}
+
+DEFAULT = XGBoostRegressorStrategy.name
 
 
 def available() -> list[str]:
