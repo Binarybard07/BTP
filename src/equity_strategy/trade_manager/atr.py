@@ -20,21 +20,28 @@ class ATRTradeManager(BaseTradeManager):
     def __init__(
         self,
         lookback_period: int = 14,
-        take_profit_multiplier: float = 3.0,
-        stop_loss_multiplier: float = 2.0,
+        take_profit_multiplier: Optional[float] = None,
+        stop_loss_multiplier: Optional[float] = None,
         strategy: Optional[Strategy] = None,
         bar_types: Optional[Sequence[BarType]] = None,
     ) -> None:
         if lookback_period < 1:
             raise ValueError(f"lookback_period must be >= 1, got {lookback_period}")
-        if take_profit_multiplier <= 0.0:
-            raise ValueError(f"take_profit_multiplier must be > 0, got {take_profit_multiplier}")
-        if stop_loss_multiplier <= 0.0:
-            raise ValueError(f"stop_loss_multiplier must be > 0, got {stop_loss_multiplier}")
+        if take_profit_multiplier is not None:
+            if take_profit_multiplier <= 0.0:
+                raise ValueError(f"take_profit_multiplier must be > 0, got {take_profit_multiplier}")
+            self.take_profit_multiplier: Optional[float] = float(take_profit_multiplier)
+        else:
+            self.take_profit_multiplier = None
+
+        if stop_loss_multiplier is not None:
+            if stop_loss_multiplier <= 0.0:
+                raise ValueError(f"stop_loss_multiplier must be > 0, got {stop_loss_multiplier}")
+            self.stop_loss_multiplier: Optional[float] = float(stop_loss_multiplier)
+        else:
+            self.stop_loss_multiplier = None
 
         self.lookback_period = int(lookback_period)
-        self.take_profit_multiplier = float(take_profit_multiplier)
-        self.stop_loss_multiplier = float(stop_loss_multiplier)
         self._indicators: Dict[InstrumentId, AverageTrueRange] = {}
 
         if strategy is not None and bar_types is not None:
@@ -59,10 +66,13 @@ class ATRTradeManager(BaseTradeManager):
         self,
         reference_price: float,
         instrument_id: Union[InstrumentId, str],
-    ) -> Tuple[float, float]:
+    ) -> Tuple[Optional[float], Optional[float]]:
         price = float(reference_price)
         if price <= 0.0:
             raise ValueError(f"reference_price must be > 0, got {price}")
+
+        if self.take_profit_multiplier is None and self.stop_loss_multiplier is None:
+            return (None, None)
 
         inst_id = (
             instrument_id
@@ -84,17 +94,22 @@ class ATRTradeManager(BaseTradeManager):
         if atr <= 0.0 or math.isnan(atr):
             raise ValueError(f"ATR value for '{inst_id}' is non-positive or invalid: {atr}")
 
-        tp = price + atr * self.take_profit_multiplier
-        sl = price - atr * self.stop_loss_multiplier
+        tp = None
+        if self.take_profit_multiplier is not None:
+            tp = price + atr * self.take_profit_multiplier
+            if tp <= 0.0:
+                raise ValueError(
+                    f"Calculated take-profit price ({tp:.4f}) is non-positive "
+                    f"for reference_price {price:.4f} and ATR {atr:.4f}."
+                )
 
-        # Ensure that the calculated prices are positive
-        if sl <= 0.0 or tp <= 0.0:
-            label = "stop-loss" if sl <= 0.0 else "take-profit"
-            value = sl if sl <= 0.0 else tp
-
-            raise ValueError(
-                f"Calculated {label} price ({value:.4f}) is non-positive "
-                f"for reference_price {price:.4f} and ATR {atr:.4f}."
-            )
+        sl = None
+        if self.stop_loss_multiplier is not None:
+            sl = price - atr * self.stop_loss_multiplier
+            if sl <= 0.0:
+                raise ValueError(
+                    f"Calculated stop-loss price ({sl:.4f}) is non-positive "
+                    f"for reference_price {price:.4f} and ATR {atr:.4f}."
+                )
 
         return (tp, sl)

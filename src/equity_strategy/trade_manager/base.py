@@ -2,7 +2,7 @@
 Abstract base class for take-profit and stop-loss calculation trade managers.
 """
 from abc import ABC, abstractmethod
-from typing import Any, Sequence, Tuple, Union
+from typing import Any, Optional, Sequence, Tuple, Union
 
 from nautilus_trader.model import BarType, InstrumentId
 
@@ -18,9 +18,10 @@ class BaseTradeManager(ABC):
         self,
         reference_price: float,
         instrument_id: Union[InstrumentId, str],
-    ) -> Tuple[float, float]:
+    ) -> Tuple[Optional[float], Optional[float]]:
         """
         Calculates (take_profit_price, stop_loss_price) for a long position.
+        Either or both prices may be None if that protection is disabled.
 
         Parameters
         ----------
@@ -31,7 +32,7 @@ class BaseTradeManager(ABC):
 
         Returns
         -------
-        Tuple[float, float]
+        Tuple[Optional[float], Optional[float]]
             A tuple of (take_profit_price, stop_loss_price).
         """
         ...

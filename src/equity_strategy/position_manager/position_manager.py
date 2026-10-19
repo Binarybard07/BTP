@@ -60,7 +60,7 @@ class PositionManager:
 
         # Pending protection replacements awaiting cancellation of previous orders:
         # InstrumentId -> (tp_price, sl_price, quantity)
-        self._pending_protection: Dict[InstrumentId, Tuple[Price, Price, Quantity]] = {}
+        self._pending_protection: Dict[InstrumentId, Tuple[Optional[Price], Optional[Price], Quantity]] = {}
 
     def initialize(
         self,
@@ -113,8 +113,17 @@ class PositionManager:
             return
 
         instrument = self._get_instrument(inst_id)
-        tp_price = instrument.make_price(tp_val)
-        sl_price = instrument.make_price(sl_val)
+        tp_price = instrument.make_price(tp_val) if tp_val is not None else None
+        sl_price = instrument.make_price(sl_val) if sl_val is not None else None
+
+        if tp_price is None and sl_price is None:
+            logger.info(
+                "Position OPENED for %s (qty=%s, ref_px=%.4f). No protective orders configured.",
+                inst_id,
+                qty,
+                ref_price,
+            )
+            return
 
         logger.info(
             "Position OPENED for %s (qty=%s, ref_px=%.4f). Submitting TP=%s, SL=%s",
@@ -164,8 +173,8 @@ class PositionManager:
             return
 
         instrument = self._get_instrument(inst_id)
-        new_tp_price = instrument.make_price(tp_val)
-        new_sl_price = instrument.make_price(sl_val)
+        new_tp_price = instrument.make_price(tp_val) if tp_val is not None else None
+        new_sl_price = instrument.make_price(sl_val) if sl_val is not None else None
 
         # Check if existing active protection already matches exactly
         if self._protection_matches(inst_id, qty, new_tp_price, new_sl_price):
@@ -188,15 +197,16 @@ class PositionManager:
             self._cancel_active_protective_orders(inst_id)
         else:
             self._pending_protection.pop(inst_id, None)
-            logger.info(
-                "Position CHANGED for %s (qty=%s, ref_px=%.4f). Submitting new TP=%s, SL=%s",
-                inst_id,
-                qty,
-                ref_price,
-                new_tp_price,
-                new_sl_price,
-            )
-            self._submit_protective_orders(inst_id, new_tp_price, new_sl_price, qty)
+            if new_tp_price is not None or new_sl_price is not None:
+                logger.info(
+                    "Position CHANGED for %s (qty=%s, ref_px=%.4f). Submitting new TP=%s, SL=%s",
+                    inst_id,
+                    qty,
+                    ref_price,
+                    new_tp_price,
+                    new_sl_price,
+                )
+                self._submit_protective_orders(inst_id, new_tp_price, new_sl_price, qty)
 
     def on_position_closed(self, event: PositionClosed) -> None:
         """
@@ -230,14 +240,15 @@ class PositionManager:
 
             # Re-verify the position is still open before submitting replacement
             if self._is_position_open_for_instrument(inst_id):
-                logger.info(
-                    "All previous protective orders for %s canceled. Submitting replacement TP=%s, SL=%s (qty=%s)...",
-                    inst_id,
-                    tp_price,
-                    sl_price,
-                    qty,
-                )
-                self._submit_protective_orders(inst_id, tp_price, sl_price, qty)
+                if tp_price is not None or sl_price is not None:
+                    logger.info(
+                        "All previous protective orders for %s canceled. Submitting replacement TP=%s, SL=%s (qty=%s)...",
+                        inst_id,
+                        tp_price,
+                        sl_price,
+                        qty,
+                    )
+                    self._submit_protective_orders(inst_id, tp_price, sl_price, qty)
             else:
                 logger.info(
                     "Position for %s is no longer open. Discarding replacement protection.",
@@ -272,23 +283,35 @@ class PositionManager:
         sl_id = self._sl_orders.get(inst_id)
 
         if event.client_order_id == tp_id:
-            logger.info(
-                "Take-profit order %s filled for %s. Cancelling corresponding stop-loss...",
-                tp_id,
-                inst_id,
-            )
             self._pending_protection.pop(inst_id, None)
             if sl_id is not None:
+                logger.info(
+                    "Take-profit order %s filled for %s. Cancelling corresponding stop-loss...",
+                    tp_id,
+                    inst_id,
+                )
                 self._cancel_order_by_id(sl_id)
+            else:
+                logger.info(
+                    "Take-profit order %s filled for %s.",
+                    tp_id,
+                    inst_id,
+                )
         elif event.client_order_id == sl_id:
-            logger.info(
-                "Stop-loss order %s filled for %s. Cancelling corresponding take-profit...",
-                sl_id,
-                inst_id,
-            )
             self._pending_protection.pop(inst_id, None)
             if tp_id is not None:
+                logger.info(
+                    "Stop-loss order %s filled for %s. Cancelling corresponding take-profit...",
+                    sl_id,
+                    inst_id,
+                )
                 self._cancel_order_by_id(tp_id)
+            else:
+                logger.info(
+                    "Stop-loss order %s filled for %s.",
+                    sl_id,
+                    inst_id,
+                )
 
     # --------------------------------------------------------------------------
     # Internal Helpers
@@ -349,64 +372,92 @@ class PositionManager:
         sl_id = self._sl_orders.get(inst_id)
         return self._is_order_closed(tp_id) and self._is_order_closed(sl_id)
 
-    def _protection_matches(
+    def _tp_matches(
         self,
         inst_id: InstrumentId,
         quantity: Quantity,
-        tp_price: Price,
-        sl_price: Price,
+        tp_price: Optional[Price],
     ) -> bool:
         tp_id = self._tp_orders.get(inst_id)
-        sl_id = self._sl_orders.get(inst_id)
-        if tp_id is None or sl_id is None:
+        if tp_price is None:
+            return self._is_order_closed(tp_id)
+        if tp_id is None:
             return False
-
         tp_order = self.strategy.cache.order(tp_id)
-        sl_order = self.strategy.cache.order(sl_id)
-
         return (
             tp_order is not None
             and tp_order.is_open
             and tp_order.quantity == quantity
             and tp_order.price == tp_price
-            and sl_order is not None
+        )
+
+    def _sl_matches(
+        self,
+        inst_id: InstrumentId,
+        quantity: Quantity,
+        sl_price: Optional[Price],
+    ) -> bool:
+        sl_id = self._sl_orders.get(inst_id)
+        if sl_price is None:
+            return self._is_order_closed(sl_id)
+        if sl_id is None:
+            return False
+        sl_order = self.strategy.cache.order(sl_id)
+        return (
+            sl_order is not None
             and sl_order.is_open
             and sl_order.quantity == quantity
             and sl_order.trigger_price == sl_price
         )
 
+    def _protection_matches(
+        self,
+        inst_id: InstrumentId,
+        quantity: Quantity,
+        tp_price: Optional[Price],
+        sl_price: Optional[Price],
+    ) -> bool:
+        return self._tp_matches(inst_id, quantity, tp_price) and self._sl_matches(
+            inst_id, quantity, sl_price
+        )
+
     def _submit_protective_orders(
         self,
         inst_id: InstrumentId,
-        tp_price: Price,
-        sl_price: Price,
+        tp_price: Optional[Price],
+        sl_price: Optional[Price],
         quantity: Quantity,
     ) -> None:
         if quantity.as_double() <= 0:
             return
 
-        tp_order = self.strategy.order_factory.limit(
-            instrument_id=inst_id,
-            order_side=OrderSide.SELL,
-            quantity=quantity,
-            price=tp_price,
-            reduce_only=True,
-        )
-        sl_order = self.strategy.order_factory.stop_market(
-            instrument_id=inst_id,
-            order_side=OrderSide.SELL,
-            quantity=quantity,
-            trigger_price=sl_price,
-            reduce_only=True,
-        )
+        if tp_price is not None:
+            tp_order = self.strategy.order_factory.limit(
+                instrument_id=inst_id,
+                order_side=OrderSide.SELL,
+                quantity=quantity,
+                price=tp_price,
+                reduce_only=True,
+            )
+            self._tp_orders[inst_id] = tp_order.client_order_id
+            self._order_to_instrument[tp_order.client_order_id] = inst_id
+            self.strategy.submit_order(tp_order)
+        else:
+            self._tp_orders.pop(inst_id, None)
 
-        self._tp_orders[inst_id] = tp_order.client_order_id
-        self._sl_orders[inst_id] = sl_order.client_order_id
-        self._order_to_instrument[tp_order.client_order_id] = inst_id
-        self._order_to_instrument[sl_order.client_order_id] = inst_id
-
-        self.strategy.submit_order(tp_order)
-        self.strategy.submit_order(sl_order)
+        if sl_price is not None:
+            sl_order = self.strategy.order_factory.stop_market(
+                instrument_id=inst_id,
+                order_side=OrderSide.SELL,
+                quantity=quantity,
+                trigger_price=sl_price,
+                reduce_only=True,
+            )
+            self._sl_orders[inst_id] = sl_order.client_order_id
+            self._order_to_instrument[sl_order.client_order_id] = inst_id
+            self.strategy.submit_order(sl_order)
+        else:
+            self._sl_orders.pop(inst_id, None)
 
     def _cancel_order_by_id(self, client_order_id: Optional[ClientOrderId]) -> None:
         if client_order_id is None or self.strategy is None:

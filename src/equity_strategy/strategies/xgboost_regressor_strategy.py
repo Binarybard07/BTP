@@ -611,7 +611,7 @@ if __name__ == "__main__":
     selector = PercentileSelector(percentile=85.0)
     portfolio = EqualWeightPortfolio()
     risk_manager = FixedPercentageRiskManager(max_deployment_pct=0.75)
-    trade_manager = FixedTPSLTradeManager(take_profit_pct=0.10, stop_loss_pct=0.05)
+    trade_manager = FixedTPSLTradeManager(take_profit_pct=0.5)
     position_manager = PositionManager(trade_manager=trade_manager)
     fee_model = IndianEquityDeliveryFeeModel()
     fill_model = SlippageFillModel(method=PercentSlippage(0.0005))
@@ -619,7 +619,7 @@ if __name__ == "__main__":
     targets = TARGET_COLUMN
 
     config = XGBoostRegressorConfig(
-        min_train_days=252,
+        min_train_days=252*4,
         model=model,
         selector=selector,
         portfolio=portfolio,
@@ -634,7 +634,7 @@ if __name__ == "__main__":
     engine = XGBoostRegressorStrategy.run(
         config=config,
         data_source=f"data/raw/{data_source}",
-        start_date="2024-01-01",
+        start_date="2014-01-01",
         starting_balance=10_000_000.0,
         unique_id=unique_id,
     )
