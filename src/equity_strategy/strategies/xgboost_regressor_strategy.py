@@ -54,6 +54,7 @@ from equity_strategy.selection.percentile import PercentileSelector
 from equity_strategy.selection.top_n import TopNSelector
 from equity_strategy.strategies.base import BaseStrategy, BaseStrategyConfig
 from equity_strategy.targets.engine import TargetEngine
+from equity_strategy.tax import IndianEquityTaxModule
 from equity_strategy.trade_manager import (
     ATRTradeManager,
     BaseTradeManager,
@@ -88,6 +89,7 @@ class XGBoostRegressorConfig(BaseStrategyConfig):
         min_train_days: int = 252,
         target_horizon: int = 10,
         position_manager: Optional[PositionManager] = None,
+        tax_module: Optional[IndianEquityTaxModule] = None,
     ) -> None:
         super().__init__(
             venue=venue,
@@ -101,6 +103,7 @@ class XGBoostRegressorConfig(BaseStrategyConfig):
         self.fee_model: FeeModel = fee_model
         self.fill_model: FillModel = fill_model
         self.position_manager: Optional[PositionManager] = position_manager
+        self.tax_module: Optional[IndianEquityTaxModule] = tax_module
 
         self.min_train_days: int = int(min_train_days)
         self.target_horizon: int = int(target_horizon)
@@ -170,6 +173,7 @@ class XGBoostRegressorStrategy(BaseStrategy):
         self.fee_model: FeeModel = config.fee_model
         self.fill_model: FillModel = config.fill_model
         self.position_manager: Optional[PositionManager] = config.position_manager
+        self.tax_module: Optional[IndianEquityTaxModule] = config.tax_module
         self.rebalancer: Optional[Rebalancer] = None
 
         # Multi-instrument synchronization and decision tracking
@@ -235,11 +239,13 @@ class XGBoostRegressorStrategy(BaseStrategy):
             self.position_manager.on_order_cancel_rejected(event)
 
     def on_order_filled(self, event: OrderFilled) -> None:
-        """Delegates fill reconciliation to slippage fill model and PositionManager."""
+        """Delegates fill reconciliation to slippage fill model, position manager, and tax module."""
         if self.fill_model is not None and hasattr(self.fill_model, "record_fill"):
             self.fill_model.record_fill(event)
         if self.position_manager is not None:
             self.position_manager.on_order_filled(event)
+        if self.tax_module is not None:
+            self.tax_module.record_fill(event)
 
     def on_bar(self, bar: Bar) -> None:
         """
@@ -449,6 +455,7 @@ class XGBoostRegressorStrategy(BaseStrategy):
             cfg = engine_config
         engine = BacktestEngine(config=cfg)
 
+        modules = [strat_config.tax_module] if strat_config.tax_module is not None else None
         engine.add_venue(
             venue=Venue(venue),
             oms_type=OmsType.NETTING,
@@ -457,6 +464,7 @@ class XGBoostRegressorStrategy(BaseStrategy):
             fee_model=strat_config.fee_model,
             fill_model=strat_config.fill_model,
             latency_model=StaticLatencyModel(insert_latency_nanos=1_000_000),
+            modules=modules,
         )
 
         bar_types: List[BarType] = []
@@ -613,18 +621,20 @@ if __name__ == "__main__":
     risk_manager = FixedPercentageRiskManager(max_deployment_pct=0.75)
     trade_manager = FixedTPSLTradeManager(take_profit_pct=0.5)
     position_manager = PositionManager(trade_manager=trade_manager)
+    tax_module = IndianEquityTaxModule(currency="INR")
     fee_model = IndianEquityDeliveryFeeModel()
     fill_model = SlippageFillModel(method=PercentSlippage(0.0005))
     features = FEATURE_COLUMNS
     targets = TARGET_COLUMN
 
     config = XGBoostRegressorConfig(
-        min_train_days=252*4,
+        min_train_days=252,
         model=model,
         selector=selector,
         portfolio=portfolio,
         risk_manager=risk_manager,
         position_manager=position_manager,
+        tax_module=tax_module,
         fee_model=fee_model,
         fill_model=fill_model,
         feature_columns=features,
@@ -634,7 +644,7 @@ if __name__ == "__main__":
     engine = XGBoostRegressorStrategy.run(
         config=config,
         data_source=f"data/raw/{data_source}",
-        start_date="2014-01-01",
+        start_date="2024-01-01",
         starting_balance=10_000_000.0,
         unique_id=unique_id,
     )

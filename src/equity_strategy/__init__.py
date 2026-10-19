@@ -8,6 +8,7 @@ from equity_strategy.rebalancing import (
     Rebalancer,
 )
 from equity_strategy.position_manager import PositionManager
+from equity_strategy.tax import IndianEquityTaxModule
 from equity_strategy.trade_manager import (
     ATRTradeManager,
     BaseTradeManager,
@@ -27,6 +28,7 @@ __all__ = [
     "FixedTPSLTradeManager",
     "ATRTradeManager",
     "PositionManager",
+    "IndianEquityTaxModule",
     "configure_logging",
     "__version__",
 ]
