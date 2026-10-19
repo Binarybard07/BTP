@@ -22,11 +22,13 @@ def compute_future_returns(
     Returns:
         pd.DataFrame: A copy of the DataFrame with the future return target column added.
     """
+    if horizon <= 0:
+        raise ValueError(f"horizon must be a positive integer, got {horizon}")
     if "Close" not in df.columns:
         raise ValueError("Input DataFrame missing required 'Close' column.")
 
     df = df.copy()
-    col_name = target_col or f"target_{horizon}d"
+    col_name = target_col if target_col is not None else f"target_{horizon}d"
     close = df["Close"]
     df[col_name] = close.shift(-horizon) / close - 1.0
 

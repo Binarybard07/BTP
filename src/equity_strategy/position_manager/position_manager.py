@@ -45,11 +45,11 @@ class PositionManager:
 
     def __init__(
         self,
+        trade_manager: BaseTradeManager,
         strategy: Optional[Strategy] = None,
-        trade_manager: Optional[BaseTradeManager] = None,
     ) -> None:
+        self.trade_manager: BaseTradeManager = trade_manager
         self.strategy: Optional[Strategy] = strategy
-        self.trade_manager: Optional[BaseTradeManager] = trade_manager
 
         # Per-instrument active protective order IDs
         self._tp_orders: Dict[InstrumentId, ClientOrderId] = {}
@@ -65,14 +65,12 @@ class PositionManager:
     def initialize(
         self,
         strategy: Strategy,
-        trade_manager: Optional[BaseTradeManager] = None,
     ) -> None:
         """
-        Initializes or updates the strategy and trade_manager references.
+        Initializes the strategy reference and registers indicators with bar types.
         """
         self.strategy = strategy
-        if trade_manager is not None:
-            self.trade_manager = trade_manager
+        self.trade_manager.register(strategy, strategy.bar_types)
 
     # --------------------------------------------------------------------------
     # Position Lifecycle Callbacks
@@ -299,8 +297,6 @@ class PositionManager:
     def _ensure_initialized(self) -> None:
         if self.strategy is None:
             raise RuntimeError("PositionManager has not been initialized with a Strategy instance.")
-        if self.trade_manager is None:
-            raise RuntimeError("PositionManager has not been initialized with a BaseTradeManager instance.")
 
     def _get_instrument(self, inst_id: InstrumentId) -> Any:
         inst = self.strategy.cache.instrument(inst_id)

@@ -67,56 +67,45 @@ class XGBoostRegressorConfig(BaseStrategyConfig):
     """
     Configuration for XGBoostRegressorStrategy.
 
-    Contains only genuine strategy configuration parameters (no large runtime data).
+    All core strategy execution dependencies (model, selector, portfolio, risk_manager,
+    fee_model, fill_model) must be explicitly configured and supplied. Missing required
+    dependencies will raise an immediate error.
     """
 
     def __init__(
         self,
-        bar_types: Optional[List[BarType]] = None,
+        model: BaseModel,
+        selector: BaseSelector,
+        portfolio: BasePortfolio,
+        risk_manager: BaseRiskManager,
+        fee_model: FeeModel,
+        fill_model: FillModel,
+        target_column: str,
+        feature_columns: List[str],
         venue: str = "NSE",
         currency: str = "INR",
         exchange_tz: str = "Asia/Kolkata",
         min_train_days: int = 252,
         target_horizon: int = 10,
-        target_column: str = TARGET_COLUMN,
-        feature_columns: Optional[List[str]] = None,
-        model: Optional[BaseModel] = None,
-        selector: Optional[BaseSelector] = None,
-        portfolio: Optional[BasePortfolio] = None,
-        risk_manager: Optional[BaseRiskManager] = None,
-        fee_model: Optional[FeeModel] = None,
-        fill_model: Optional[FillModel] = None,
-        trade_manager: Optional[BaseTradeManager] = None,
         position_manager: Optional[PositionManager] = None,
     ) -> None:
         super().__init__(
-            bar_types=bar_types,
             venue=venue,
             currency=currency,
             exchange_tz=exchange_tz,
         )
-        self.min_train_days: int = min_train_days
-        self.target_horizon: int = target_horizon
-        self.target_column: str = target_column
-        self.feature_columns: List[str] = (
-            list(feature_columns) if feature_columns is not None else list(FEATURE_COLUMNS)
-        )
-        self.model: BaseModel = model if model is not None else XGBoostRegressor()
-        self.selector: BaseSelector = selector if selector is not None else TopNSelector()
-        self.portfolio: BasePortfolio = (
-            portfolio if portfolio is not None else EqualWeightPortfolio()
-        )
-        self.risk_manager: BaseRiskManager = (
-            risk_manager if risk_manager is not None else FixedPercentageRiskManager(1.0)
-        )
-        self.fee_model: FeeModel = (
-            fee_model if fee_model is not None else IndianEquityDeliveryFeeModel()
-        )
-        self.fill_model: FillModel = (
-            fill_model if fill_model is not None else SlippageFillModel()
-        )
-        self.trade_manager: Optional[BaseTradeManager] = trade_manager
+        self.model: BaseModel = model
+        self.selector: BaseSelector = selector
+        self.portfolio: BasePortfolio = portfolio
+        self.risk_manager: BaseRiskManager = risk_manager
+        self.fee_model: FeeModel = fee_model
+        self.fill_model: FillModel = fill_model
         self.position_manager: Optional[PositionManager] = position_manager
+
+        self.min_train_days: int = int(min_train_days)
+        self.target_horizon: int = int(target_horizon)
+        self.target_column: str = target_column
+        self.feature_columns: List[str] = list(feature_columns)
 
 
 class XGBoostRegressorStrategy(BaseStrategy):
@@ -150,12 +139,13 @@ class XGBoostRegressorStrategy(BaseStrategy):
     def __init__(
         self,
         config: XGBoostRegressorConfig,
+        bar_types: List[BarType],
         featured_df: pd.DataFrame,
         training_df: pd.DataFrame,
         all_trading_dates: List[pd.Timestamp],
         instruments_by_date: Dict[pd.Timestamp, Set[InstrumentId]],
     ) -> None:
-        super().__init__(config=config)
+        super().__init__(config=config, bar_types=bar_types)
         self.featured_df = featured_df
         self.training_df = training_df
         self.all_trading_dates = all_trading_dates
@@ -179,13 +169,17 @@ class XGBoostRegressorStrategy(BaseStrategy):
         self.risk_manager: BaseRiskManager = config.risk_manager
         self.fee_model: FeeModel = config.fee_model
         self.fill_model: FillModel = config.fill_model
-        self.trade_manager: Optional[BaseTradeManager] = config.trade_manager
         self.position_manager: Optional[PositionManager] = config.position_manager
         self.rebalancer: Optional[Rebalancer] = None
 
         # Multi-instrument synchronization and decision tracking
         self._session_reported_bars: Dict[pd.Timestamp, Set[InstrumentId]] = {}
         self._rebalance_plans_by_decision_date: Set[pd.Timestamp] = set()
+
+    @property
+    def trade_manager(self) -> Optional[BaseTradeManager]:
+        """Provides backward-compatible access to the configured TradeManager."""
+        return self.position_manager.trade_manager if self.position_manager is not None else None
 
     def on_start(self) -> None:
         """Initializes subscriptions and execution infrastructure."""
@@ -195,16 +189,9 @@ class XGBoostRegressorStrategy(BaseStrategy):
         for bar_type in self.bar_types:
             self.subscribe_quotes(bar_type.instrument_id)
 
-        # Wire trade manager indicator registration if applicable (e.g. ATRTradeManager)
-        if self.trade_manager is not None and hasattr(self.trade_manager, "register"):
-            self.trade_manager.register(self, self.bar_types)
-
-        # Wire position manager with strategy runtime and trade manager
+        # Wire position manager with strategy runtime
         if self.position_manager is not None:
-            self.position_manager.initialize(
-                strategy=self,
-                trade_manager=self.trade_manager,
-            )
+            self.position_manager.initialize(strategy=self)
 
         # Wire rebalancer with authoritative strategy risk manager
         self.rebalancer = Rebalancer(
@@ -394,12 +381,12 @@ class XGBoostRegressorStrategy(BaseStrategy):
     @classmethod
     def run(
         cls,
+        config: XGBoostRegressorConfig,
         data_source: Union[str, pathlib.Path, pd.DataFrame] = "data/raw/NIFTY50",
         symbol: Optional[str] = None,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         starting_balance: float = 10_000_000.0,
-        config: Optional[XGBoostRegressorConfig] = None,
         pipeline: Optional[StrategyDataPipeline] = None,
         engine_config: Optional[BacktestEngineConfig] = None,
         unique_id: Optional[str] = None,
@@ -407,7 +394,7 @@ class XGBoostRegressorStrategy(BaseStrategy):
         """
         Executes a multi-instrument NautilusTrader backtest for XGBoostRegressorStrategy.
         """
-        strat_config = XGBoostRegressorConfig() if config is None else config
+        strat_config = config
         venue = strat_config.venue
         currency = strat_config.currency
         unique_id = "001" if unique_id is None else unique_id
@@ -439,7 +426,7 @@ class XGBoostRegressorStrategy(BaseStrategy):
             else:
                 raise FileNotFoundError(f"Data source not found: {data_source}")
 
-        pipe = StrategyDataPipeline() if pipeline is None else pipeline
+        pipe = pipeline if pipeline is not None else StrategyDataPipeline()
 
         run_dir = pathlib.Path("strategy_results") / unique_id
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -561,11 +548,11 @@ class XGBoostRegressorStrategy(BaseStrategy):
                 for s in grp["Symbol"]
             }
 
-        strat_config.bar_types = bar_types
         engine.sort_data()
 
         strategy = cls(
             config=strat_config,
+            bar_types=bar_types,
             featured_df=combined_featured_df,
             training_df=training_df,
             all_trading_dates=all_trading_dates,
@@ -628,6 +615,8 @@ if __name__ == "__main__":
     position_manager = PositionManager(trade_manager=trade_manager)
     fee_model = IndianEquityDeliveryFeeModel()
     fill_model = SlippageFillModel(method=PercentSlippage(0.0005))
+    features = FEATURE_COLUMNS
+    targets = TARGET_COLUMN
 
     config = XGBoostRegressorConfig(
         min_train_days=252,
@@ -635,17 +624,18 @@ if __name__ == "__main__":
         selector=selector,
         portfolio=portfolio,
         risk_manager=risk_manager,
-        trade_manager=trade_manager,
         position_manager=position_manager,
         fee_model=fee_model,
         fill_model=fill_model,
+        feature_columns=features,
+        target_column=targets
     )
 
     engine = XGBoostRegressorStrategy.run(
+        config=config,
         data_source=f"data/raw/{data_source}",
         start_date="2024-01-01",
         starting_balance=10_000_000.0,
-        config=config,
         unique_id=unique_id,
     )
 

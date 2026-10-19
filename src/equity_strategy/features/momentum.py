@@ -12,6 +12,11 @@ def compute_momentum_features(
     - return_63: Close[t] / Close[t-63] - 1
     - return_252: Close[t] / Close[t-252] - 1
     """
+    if "Close" not in df.columns:
+        raise ValueError("Input DataFrame missing required 'Close' column.")
+    if short_window <= 0 or medium_window <= 0 or long_window <= 0:
+        raise ValueError("Momentum windows must be positive integers.")
+
     df = df.copy()
     close = df["Close"]
 

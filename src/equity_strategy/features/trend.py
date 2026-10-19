@@ -10,6 +10,11 @@ def compute_trend_features(
     - close_to_ma50: Close / MA50
     - close_to_ma200: Close / MA200
     """
+    if "Close" not in df.columns:
+        raise ValueError("Input DataFrame missing required 'Close' column.")
+    if short_ma <= 0 or long_ma <= 0:
+        raise ValueError("Moving average windows must be positive integers.")
+
     df = df.copy()
     close = df["Close"]
 

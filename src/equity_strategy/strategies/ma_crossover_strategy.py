@@ -41,10 +41,8 @@ class MACrossoverConfig(StrategyConfig):
                 Dict[int, Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]],
             ]
         ] = None,
-        **kwargs,
     ):
-        super().__init__()
-        self.bar_types = bar_types
+        self.bar_types = list(bar_types)
         self.trade_size = (
             trade_size
             if isinstance(trade_size, Quantity)
@@ -53,7 +51,7 @@ class MACrossoverConfig(StrategyConfig):
         self.features: Dict[
             InstrumentId,
             Dict[int, Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]],
-        ] = features or {}
+        ] = features if features is not None else {}
 
     @staticmethod
     def _index_dataframe(

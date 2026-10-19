@@ -15,7 +15,9 @@ class TargetEngine:
         horizon: int = 10,
         target_col: Optional[str] = None,
     ) -> None:
-        self.horizon: int = horizon
+        if horizon <= 0:
+            raise ValueError(f"horizon must be a positive integer, got {horizon}")
+        self.horizon: int = int(horizon)
         self.target_col: str = (
             target_col
             if target_col is not None

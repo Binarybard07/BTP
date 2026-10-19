@@ -18,12 +18,18 @@ class FeatureEngine:
         moving_average_long: int = 200,
         volatility_window: int = 21,
     ) -> None:
-        self.momentum_short = momentum_short
-        self.momentum_medium = momentum_medium
-        self.momentum_long = momentum_long
-        self.moving_average_short = moving_average_short
-        self.moving_average_long = moving_average_long
-        self.volatility_window = volatility_window
+        if momentum_short <= 0 or momentum_medium <= 0 or momentum_long <= 0:
+            raise ValueError("Momentum windows must be positive integers.")
+        if moving_average_short <= 0 or moving_average_long <= 0:
+            raise ValueError("Moving average windows must be positive integers.")
+        if volatility_window <= 0:
+            raise ValueError("Volatility window must be a positive integer.")
+        self.momentum_short = int(momentum_short)
+        self.momentum_medium = int(momentum_medium)
+        self.momentum_long = int(momentum_long)
+        self.moving_average_short = int(moving_average_short)
+        self.moving_average_long = int(moving_average_long)
+        self.volatility_window = int(volatility_window)
 
     def _compute_symbol_features(self, df_symbol: pd.DataFrame) -> pd.DataFrame:
         """Computes all features for a single symbol DataFrame sorted by Date."""

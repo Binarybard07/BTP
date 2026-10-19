@@ -2,9 +2,9 @@
 Abstract base class for take-profit and stop-loss calculation trade managers.
 """
 from abc import ABC, abstractmethod
-from typing import Tuple, Union
+from typing import Any, Sequence, Tuple, Union
 
-from nautilus_trader.model import InstrumentId
+from nautilus_trader.model import BarType, InstrumentId
 
 
 class BaseTradeManager(ABC):
@@ -35,3 +35,15 @@ class BaseTradeManager(ABC):
             A tuple of (take_profit_price, stop_loss_price).
         """
         ...
+
+    def register(
+        self,
+        strategy: Any,
+        bar_types: Sequence[BarType],
+    ) -> None:
+        """
+        Registers any indicators or data subscriptions required by this trade manager
+        with the Nautilus Strategy runtime. Subclasses that do not require indicators
+        inherit this default no-op.
+        """
+        pass

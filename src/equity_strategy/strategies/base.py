@@ -1,7 +1,7 @@
 """
 Minimal reusable base strategy and configuration for equity trading on NautilusTrader.
 """
-from typing import Any, List, Optional
+from typing import Any, List
 import pandas as pd
 
 from nautilus_trader.model import BarType
@@ -21,13 +21,11 @@ class BaseStrategyConfig(StrategyConfig):
 
     def __init__(
         self,
-        bar_types: Optional[List[BarType]] = None,
         venue: str = "NSE",
         currency: str = "INR",
         exchange_tz: str = "Asia/Kolkata",
     ) -> None:
         super().__init__()
-        self.bar_types: List[BarType] = bar_types if bar_types is not None else []
         self.venue: str = venue
         self.currency: str = currency
         self.exchange_tz: str = exchange_tz
@@ -43,9 +41,9 @@ class BaseStrategy(Strategy):
     - Normalizes event timestamps to exchange session dates.
     """
 
-    def __init__(self, config: BaseStrategyConfig) -> None:
+    def __init__(self, config: BaseStrategyConfig, bar_types: List[BarType]) -> None:
         super().__init__(config=config)
-        self.bar_types: List[BarType] = config.bar_types
+        self.bar_types = bar_types
         self.venue: str = config.venue
         self.currency: str = config.currency
         self.exchange_tz: str = config.exchange_tz
