@@ -31,12 +31,21 @@ import pandas as pd
 _CURRENT_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = Path(__file__).resolve().parents[4]  # c:\Users\Jenish\Desktop\SEM VII\BTP
 _SRC_DIR = _REPO_ROOT / "src"
-_BM_SRC_DIR = Path(__file__).resolve().parents[1]  # .../Backtest_Module/src
+_BM_SRC_DIR = Path(__file__).resolve().parents[2]  # .../Backtest_Module/src
 
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 if str(_BM_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_BM_SRC_DIR))
+
+# Ensure local data root and default universe are initialized if not externally set
+if "QBEAST_BACKTEST_UNIVERSE" not in os.environ:
+    os.environ["QBEAST_BACKTEST_UNIVERSE"] = "nifty100"
+
+if "QBEAST_DATA_ROOT" not in os.environ:
+    _local_data = _REPO_ROOT / "data" / "Final_Without_Survivorship_Data"
+    if _local_data.exists():
+        os.environ["QBEAST_DATA_ROOT"] = str(_local_data)
 
 from qbeast_backtest import config as C
 from qbeast_backtest.contracts import MarketData, StrategyOutput
@@ -292,11 +301,20 @@ def main() -> int:
     """
     Runnable entrypoint executing XGBoostRegressorStrategy through Backtest_Module on NautilusTrader.
     """
+    # 1. Environment defaults (set before importing config/pipeline)
+    if "QBEAST_BACKTEST_UNIVERSE" not in os.environ:
+        os.environ["QBEAST_BACKTEST_UNIVERSE"] = "nifty100"
+
+    if "QBEAST_DATA_ROOT" not in os.environ:
+        local_data = _REPO_ROOT / "data" / "Final_Without_Survivorship_Data"
+        if local_data.exists():
+            os.environ["QBEAST_DATA_ROOT"] = str(local_data)
+
     from qbeast_backtest import config as C
     from qbeast_backtest import pipeline, report
     from qbeast_backtest.stage2_strategy.registry import REGISTRY
 
-    # 1. Strategy & Backtest Parameters
+    # 2. Strategy & Backtest Parameters
     strategy_params = {
         "rebalance_frequency": "monthly",
         "selector": "percentile",
@@ -309,10 +327,6 @@ def main() -> int:
         "min_train_days": 252,
         "target_horizon": 10,
     }
-
-    # 2. Universe configuration
-    universe = os.environ.get("QBEAST_BACKTEST_UNIVERSE", "nifty100")
-    os.environ["QBEAST_BACKTEST_UNIVERSE"] = universe
 
     # 3. Instantiate strategy explicitly
     strat = XGBoostRegressorStrategy(
