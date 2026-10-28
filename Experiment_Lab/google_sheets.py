@@ -12,6 +12,7 @@ Synchronizes Backtest_Results/metrics.xlsx ('Metrics' sheet) to Google Sheets.
 import logging
 import os
 from pathlib import Path
+import string
 import sys
 import time
 from typing import Optional
@@ -90,13 +91,33 @@ def get_gspread_client() -> Optional[gspread.Client]:
         return None
 
 
-def format_google_sheet(sheet: gspread.Spreadsheet, wks: gspread.Worksheet):
-    """Freeze header row and make header bold."""
+def idx_to_col(col_idx: int) -> str:
+    """Turn 0-based column index to A, B, ... Z, AA, etc."""
+    letters = []
+    while True:
+        col_idx, rem = divmod(col_idx, 26)
+        letters.append(string.ascii_uppercase[rem])
+        if col_idx == 0:
+            break
+        col_idx -= 1
+    return "".join(reversed(letters))
+
+
+def format_google_sheet(sheet: gspread.Spreadsheet, wks: gspread.Worksheet, df: pd.DataFrame):
+    """
+    Apply sheet formatting:
+      1) Freeze header row
+      2) Bold header row
+      3) Highlight rows where Score > 0 in light green (#C6EFCE)
+    """
     try:
         props = wks._properties
         sheet_id = props["sheetId"]
+        ncols = len(df.columns)
+        headers = list(df.columns)
 
         requests = [
+            # 1. Freeze header row
             {
                 "updateSheetProperties": {
                     "properties": {
@@ -106,6 +127,7 @@ def format_google_sheet(sheet: gspread.Spreadsheet, wks: gspread.Worksheet):
                     "fields": "gridProperties.frozenRowCount",
                 }
             },
+            # 2. Bold header row
             {
                 "repeatCell": {
                     "range": {
@@ -123,7 +145,59 @@ def format_google_sheet(sheet: gspread.Spreadsheet, wks: gspread.Worksheet):
                 }
             },
         ]
+
+        # Clear existing conditional formatting rules on this sheet to prevent duplication
+        try:
+            meta = sheet.fetch_sheet_metadata({"includeGridData": False})
+            for s in meta.get("sheets", []):
+                if s.get("properties", {}).get("sheetId") == sheet_id:
+                    num_cf = len(s.get("conditionalFormats", []))
+                    for _ in range(num_cf):
+                        requests.append({
+                            "deleteConditionalFormatRule": {
+                                "sheetId": sheet_id,
+                                "index": 0,
+                            }
+                        })
+                    break
+        except Exception as e:
+            logger.debug(f"Could not inspect existing conditional format rules: {e}")
+
+        # 3. Add conditional formatting rule: highlight row light-green if Score > 0
+        if "Score" in headers:
+            score_idx = headers.index("Score")
+            col_letter = idx_to_col(score_idx)
+            cf_range = {
+                "sheetId": sheet_id,
+                "startRowIndex": 1,
+                "startColumnIndex": 0,
+                "endColumnIndex": ncols,
+            }
+            cf_rule = {
+                "addConditionalFormatRule": {
+                    "rule": {
+                        "ranges": [cf_range],
+                        "booleanRule": {
+                            "condition": {
+                                "type": "CUSTOM_FORMULA",
+                                "values": [{"userEnteredValue": f"=${col_letter}2>0"}],
+                            },
+                            "format": {
+                                "backgroundColor": {
+                                    "red": 0.776,
+                                    "green": 0.937,
+                                    "blue": 0.808,
+                                }
+                            },
+                        },
+                    },
+                    "index": 0,
+                }
+            }
+            requests.append(cf_rule)
+
         sheet.batch_update({"requests": requests})
+        logger.info(f"Installed sheet formatting for '{wks.title}' (freeze, bold, Score > 0 green highlight).")
     except Exception as e:
         logger.warning(f"Could not apply sheet formatting on {wks.title}: {e}")
 
@@ -146,7 +220,7 @@ def sync_tab(sheet: gspread.Spreadsheet, title: str, df: pd.DataFrame):
 
         wks.clear()
         wks.update(range_name="A1", values=values)
-        format_google_sheet(sheet, wks)
+        format_google_sheet(sheet, wks, clean_df)
         logger.info(f"Successfully uploaded {len(clean_df)} rows to tab '{title}'.")
 
     except Exception as e:

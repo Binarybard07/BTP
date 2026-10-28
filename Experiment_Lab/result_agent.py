@@ -194,7 +194,7 @@ def write_styled_excel(df: pd.DataFrame):
 
 
 def format_worksheet(ws, df: pd.DataFrame):
-    """Freeze row 1, bold header, and highlight top scores in light green (#C6EFCE)."""
+    """Freeze row 1, bold header, and highlight rows with Score > 0 in light green (#C6EFCE)."""
     ws.freeze_panes = "A2"
     header_font = Font(bold=True)
     for cell in ws[1]:
@@ -207,7 +207,7 @@ def format_worksheet(ws, df: pd.DataFrame):
             val = ws.cell(row=r_idx, column=score_idx).value
             if val is not None:
                 try:
-                    if float(val) >= 0.0:
+                    if float(val) > 0.0:
                         for col_idx in range(1, len(df.columns) + 1):
                             ws.cell(row=r_idx, column=col_idx).fill = green_fill
                 except (ValueError, TypeError):
