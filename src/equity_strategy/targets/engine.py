@@ -1,7 +1,7 @@
-from typing import Optional
+from typing import Any, Callable, Dict
 import pandas as pd
 
-from equity_strategy.targets.returns import compute_future_returns
+from equity_strategy.targets.returns import ReturnTargets
 
 
 class TargetEngine:
@@ -10,35 +10,42 @@ class TargetEngine:
     Preserves chronological ordering.
     """
 
+    INDICATORS: Dict[str, Callable[..., pd.Series]] = {
+        "forward_return": ReturnTargets.forward_return,
+    }
+
     def __init__(
         self,
-        horizon: int = 10,
-        target_col: Optional[str] = None,
+        target_col: str,
+        indicator: str,
+        params: Dict[str, Any],
     ) -> None:
-        if horizon <= 0:
-            raise ValueError(f"horizon must be a positive integer, got {horizon}")
-        self.horizon: int = int(horizon)
-        self.target_col: str = (
-            target_col
-            if target_col is not None
-            else f"target_{self.horizon}d"
-        )
+        if not target_col:
+            raise ValueError("TargetEngine requires target_col.")
+        if indicator not in self.INDICATORS:
+            raise ValueError(
+                f"Unknown target indicator '{indicator}'. "
+                f"Available target indicators: {list(self.INDICATORS.keys())}"
+            )
+        if not params or not isinstance(params, dict):
+            raise ValueError("TargetEngine requires a non-empty params dictionary.")
+
+        self.target_col = str(target_col)
+        self.indicator = str(indicator)
+        self.params = dict(params)
+        self.horizon: int = int(self.params["horizon"])
 
     def _compute_symbol_targets(self, df_symbol: pd.DataFrame) -> pd.DataFrame:
         """
-        Computes future return target for a single symbol DataFrame
-        sorted chronologically by Date.
+        Computes configured target for a single symbol DataFrame sorted chronologically by Date.
         """
         if "Date" in df_symbol.columns:
             df_symbol = df_symbol.sort_values(by="Date").reset_index(drop=True)
 
-        df_symbol = compute_future_returns(
-            df_symbol,
-            horizon=self.horizon,
-            target_col=self.target_col,
-        )
-
-        return df_symbol
+        df_result = df_symbol.copy()
+        func = self.INDICATORS[self.indicator]
+        df_result[self.target_col] = func(df_result, **self.params)
+        return df_result
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         """

@@ -2,14 +2,14 @@
 Equity Strategy - Quantitative Alpha & Feature Pipeline
 """
 from equity_strategy.data.training_dataset import (
-    FEATURE_COLUMNS,
-    TARGET_COLUMN,
-    OHLCV_COLUMNS,
-    DATASET_COLUMNS,
     TrainingDatasetBuilder,
     build_training_dataset,
 )
+from equity_strategy.features.trend import TrendFeatures
+from equity_strategy.features.momentum import MomentumFeatures
+from equity_strategy.features.volatility import VolatilityFeatures
 from equity_strategy.features.engine import FeatureEngine
+from equity_strategy.targets.returns import ReturnTargets
 from equity_strategy.targets.engine import TargetEngine
 from equity_strategy.models.base import BaseModel
 from equity_strategy.models.xgboost_regressor import XGBoostRegressor
@@ -23,13 +23,13 @@ from equity_strategy.risk_management.fixed_percentage import FixedPercentageRisk
 __version__ = "0.1.0"
 
 __all__ = [
-    "FEATURE_COLUMNS",
-    "TARGET_COLUMN",
-    "OHLCV_COLUMNS",
-    "DATASET_COLUMNS",
     "TrainingDatasetBuilder",
     "build_training_dataset",
+    "TrendFeatures",
+    "MomentumFeatures",
+    "VolatilityFeatures",
     "FeatureEngine",
+    "ReturnTargets",
     "TargetEngine",
     "BaseModel",
     "XGBoostRegressor",

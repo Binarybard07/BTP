@@ -1,20 +1,14 @@
 import pandas as pd
 
-def compute_volatility_features(
-    df: pd.DataFrame,
-    window: int = 21
-) -> pd.DataFrame:
-    """
-    Computes volatility feature per symbol:
-    - volatility_21: 21-day rolling standard deviation of daily returns
-    """
-    if "Close" not in df.columns:
-        raise ValueError("Input DataFrame missing required 'Close' column.")
-    if window <= 0:
-        raise ValueError("Volatility window must be a positive integer.")
 
-    df = df.copy()
-    daily_return = df["Close"].pct_change()
-    df[f"volatility_{window}"] = daily_return.rolling(window=window, min_periods=window).std()
+class VolatilityFeatures:
+    """Volatility feature calculations per symbol."""
 
-    return df
+    @staticmethod
+    def rolling_std(df: pd.DataFrame, period: int = 21, price_col: str = "Close") -> pd.Series:
+        if price_col not in df.columns:
+            raise ValueError(f"Input DataFrame missing required '{price_col}' column.")
+        if period <= 0:
+            raise ValueError("period must be a positive integer.")
+        daily_ret = df[price_col].pct_change()
+        return daily_ret.rolling(window=period, min_periods=period).std()

@@ -22,15 +22,17 @@ from __future__ import annotations
 from dotenv import load_dotenv
 load_dotenv()
 
-import os
 import sys
+import importlib
 import pandas as pd
 from typing import Any, Dict, List
 
 from qbeast_backtest.contracts import MarketData, StrategyOutput
 from qbeast_backtest.stage2_strategy.base import StrategyBase
+from qbeast_backtest import pipeline, report
+from qbeast_backtest.stage2_strategy import registry as pkg_registry
 
-from equity_strategy.data.training_dataset import FEATURE_COLUMNS, TARGET_COLUMN, TrainingDatasetBuilder
+from equity_strategy.data.training_dataset import TrainingDatasetBuilder
 from equity_strategy.features.engine import FeatureEngine
 from equity_strategy.targets.engine import TargetEngine
 from equity_strategy.models.base import BaseModel
@@ -41,6 +43,15 @@ from equity_strategy.selection.base import BaseSelector
 from equity_strategy.selection.percentile import PercentileSelector
 from equity_strategy.risk_management.base import BaseRiskManager
 from equity_strategy.risk_management.fixed_percentage import FixedPercentageRiskManager
+
+
+def _get_params(obj: Any) -> Dict[str, Any]:
+    """Extract public constructor/instance attributes from a component instance."""
+    if obj is None:
+        return {}
+    if hasattr(obj, "__dict__"):
+        return {k: v for k, v in vars(obj).items() if not k.startswith("_")}
+    return {}
 
 
 class XGBoostRegressorStrategy(StrategyBase):
@@ -54,12 +65,9 @@ class XGBoostRegressorStrategy(StrategyBase):
 
     def __init__(
         self,
-        feature_engine: FeatureEngine = None,
-        feature_columns: List[str] = list(FEATURE_COLUMNS),
-        target_engine: TargetEngine = None,
-        target_horizon: int = 10,
-        target_column: str = TARGET_COLUMN,
-        model: BaseModel = None,
+        feature_engine: FeatureEngine,
+        target_engine: TargetEngine,
+        model: BaseModel,
         model_params: Dict[str, Any] = {},
         min_train_days: int = 252,
         selector: BaseSelector = None,
@@ -69,10 +77,7 @@ class XGBoostRegressorStrategy(StrategyBase):
         **kwargs: Any,
     ) -> None:
         self.feature_engine = feature_engine
-        self.feature_columns = list(feature_columns)
         self.target_engine = target_engine
-        self.target_horizon = int(target_horizon)
-        self.target_column = str(target_column)
         self.model = model
         self.model_params = model_params
         self.min_train_days = int(min_train_days)
@@ -80,6 +85,18 @@ class XGBoostRegressorStrategy(StrategyBase):
         self.portfolio = portfolio
         self.risk_manager = risk_manager
         self.rebalance_frequency = rebalance_frequency
+
+    @property
+    def feature_columns(self) -> List[str]:
+        return self.feature_engine.feature_columns
+
+    @property
+    def target_column(self) -> str:
+        return self.target_engine.target_col
+
+    @property
+    def target_horizon(self) -> int:
+        return self.target_engine.horizon
 
     def decide(self, md: MarketData) -> StrategyOutput:
         """
@@ -103,11 +120,9 @@ class XGBoostRegressorStrategy(StrategyBase):
 
         # 3. Build training dataset (features, forward target, and clean rows)
         builder = TrainingDatasetBuilder(
-            feature_columns=self.feature_columns,
-            ohlcv_columns=["Close"],
-            target_column=self.target_column,
             feature_engine=self.feature_engine,
             target_engine=self.target_engine,
+            ohlcv_columns=["Close"],
         )
         full_dataset = builder.build(featured_df)
 
@@ -134,7 +149,7 @@ class XGBoostRegressorStrategy(StrategyBase):
                 posture[t_ts] = "cash"
                 continue
 
-            cutoff_date = cal_until_t[-self.target_horizon]
+            cutoff_date = cal_until_t[-self.target_horizon]  # T - target_horizon
             eligible_train = full_dataset[full_dataset["Date"] < cutoff_date]
 
             unique_train_days = eligible_train["Date"].nunique()
@@ -215,18 +230,20 @@ class XGBoostRegressorStrategy(StrategyBase):
             posture=pd.Series(posture).sort_index() if posture else None,
             name=self.name,
             params=dict(
-                feature_engine=type(self.feature_engine).__name__ ,
-                feature_columns=self.feature_columns,
+                feature_engine=type(self.feature_engine).__name__,
+                feature_engine_params=_get_params(self.feature_engine),
                 target_engine=type(self.target_engine).__name__,
-                target_horizon=self.target_horizon,
-                target_column=self.target_column,
+                target_engine_params=_get_params(self.target_engine),
                 model=self.model.__name__,
                 model_params=self.model_params,
                 min_train_days=self.min_train_days,
                 selector=type(self.selector).__name__,
-                portfolio=type(self.portfolio).__name__ ,
+                selector_params=_get_params(self.selector),
+                portfolio=type(self.portfolio).__name__,
+                portfolio_params=_get_params(self.portfolio),
                 risk_manager=type(self.risk_manager).__name__,
-                rebalance_frequency=self.rebalance_frequency
+                risk_manager_params=_get_params(self.risk_manager),
+                rebalance_frequency=self.rebalance_frequency,
             ),
         )
 
@@ -251,24 +268,32 @@ def main() -> int:
         "n_jobs": -1,
     }
 
+    feature_config = {
+        "return_21": {"indicator": "returns", "params": {"period": 21}},
+        "return_63": {"indicator": "returns", "params": {"period": 63}},
+        "return_252": {"indicator": "returns", "params": {"period": 252}},
+        "close_to_ma50": {"indicator": "close_to_sma", "params": {"period": 50}},
+        "close_to_ma200": {"indicator": "close_to_sma", "params": {"period": 200}},
+        "volatility_21": {"indicator": "rolling_std", "params": {"period": 21}},
+    }
+    feature_engine = FeatureEngine(features=feature_config)
+    target_engine = TargetEngine(
+        target_col="return_30",
+        indicator="forward_return",
+        params={"horizon": 30},
+    )
+
     strategy_params = {
-        "feature_engine" : FeatureEngine(),
-        "feature_columns": list(FEATURE_COLUMNS),
-        "target_engine": TargetEngine(),
-        "target_horizon": 30,
-        "target_column": TARGET_COLUMN,
+        "feature_engine": feature_engine,
+        "target_engine": target_engine,
         "model": XGBoostRegressor,
         "model_params": model_params,
-        "min_train_days": 252*4,
+        "min_train_days": 252,
         "selector": PercentileSelector(percentile=0.85),
         "portfolio": EqualWeightPortfolio(),
         "risk_manager": FixedPercentageRiskManager(max_deployment_pct=0.9),
         "rebalance_frequency": "monthly",
     }
-
-    from qbeast_backtest import pipeline, report
-    from qbeast_backtest.stage2_strategy import registry as pkg_registry
-    import importlib
 
     # 1. Instantiate strategy explicitly with the centralized configuration block
     strat = XGBoostRegressorStrategy(**strategy_params)
