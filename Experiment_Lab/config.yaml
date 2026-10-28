@@ -1,0 +1,90 @@
+# ==============================================================================
+# Experiment Lab Configuration
+# ==============================================================================
+# Mirrors RM_TM_TF_Combo design for Backtest_Module strategy experimentation.
+# All parameters in baseline & variations are substituted directly into the strategy template.
+# ==============================================================================
+
+experiment_name: "xgboost_experiments"
+engine: "nautilus"
+
+# Combination Generation Mode:
+#   - "ofat": One-factor-at-a-time comparisons around the baseline
+#   - "grid": Full Cartesian-product grid search across all variations
+#   - "explicit": Run only explicit combinations listed under 'explicit_combinations'
+mode: "ofat"
+
+# Concurrency & Execution Control
+execution:
+  max_workers: 2            # Parallel backtest runner limit
+  skip_completed: true      # Resume policy: do not rerun if summary.json exists
+  timeout_seconds: 1800     # Maximum execution time per backtest (seconds)
+
+# ------------------------------------------------------------------------------
+# Baseline Configuration (Default reference parameters)
+# ------------------------------------------------------------------------------
+baseline:
+  universe: "nifty500_ddq"
+  start_date: "2019-01-01"
+  end_date: "2027-01-01"
+  rebalance_frequency: "monthly"
+  min_train_days: 1260
+  selector_percentile: 0.90
+  max_deployment_pct: 0.90
+  target_horizon: 30
+
+  model_params:
+    n_estimators: 100
+    max_depth: 3
+    learning_rate: 0.05
+    subsample: 0.8
+    colsample_bytree: 0.8
+    random_state: 42
+    n_jobs: -1
+
+  features:
+    return_21:
+      indicator: "returns"
+      params: {period: 21}
+    return_63:
+      indicator: "returns"
+      params: {period: 63}
+    return_252:
+      indicator: "returns"
+      params: {period: 252}
+    close_to_ma50:
+      indicator: "close_to_sma"
+      params: {period: 50}
+    close_to_ma200:
+      indicator: "close_to_sma"
+      params: {period: 200}
+    volatility_21:
+      indicator: "rolling_std"
+      params: {period: 21}
+
+# ------------------------------------------------------------------------------
+# Variations (Parameters to vary in Grid / OFAT search)
+# Any parameter with multiple values generates combinations; single values remain fixed.
+# ------------------------------------------------------------------------------
+variations:
+  # Universe & Timeframe Parameters
+  universe: ["nifty500_ddq", "nifty50_ddq"]
+  start_date: ["2019-01-01"]
+  end_date: ["2027-01-01"]
+  rebalance_frequency: ["monthly"]
+
+  # Strategy & Target Parameters
+  target_horizon: [10, 20, 30, 60]
+  selector_percentile: [0.85, 0.90]
+  max_deployment_pct: [0.75, 0.90]
+
+  # XGBoost Model Hyperparameters
+  model_params:
+    max_depth: [2, 3, 4]
+    learning_rate: [0.03, 0.05]
+    n_estimators: [100, 200]
+
+# ------------------------------------------------------------------------------
+# Explicit Combinations (Used when mode == "explicit")
+# ------------------------------------------------------------------------------
+explicit_combinations: []

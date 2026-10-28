@@ -19,8 +19,16 @@ MarketData and StrategyOutput contracts:
 """
 from __future__ import annotations
 
+import os
+
+# Centralized strategy execution environment controls
+os.environ["QBEAST_BACKTEST_UNIVERSE"] = os.environ.get("QBEAST_BACKTEST_UNIVERSE", "nifty500_ddq")
+os.environ["QBEAST_BACKTEST_START"] = os.environ.get("QBEAST_BACKTEST_START", "2019-01-01")
+os.environ["QBEAST_BACKTEST_END"] = os.environ.get("QBEAST_BACKTEST_END", "2027-01-01")
+os.environ["REBALANCE_FREQ"] = os.environ.get("REBALANCE_FREQ", "monthly")
+
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=False)
 
 import sys
 import importlib

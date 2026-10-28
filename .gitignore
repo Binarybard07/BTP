@@ -1,5 +1,6 @@
 # Virtual environments
 .venv
+.backtest_module
 # Python-generated files
 __pycache__/
 *.py[oc]
@@ -20,3 +21,14 @@ wheels/
 Resources/
 nautilus_trader/
 *.env
+
+# Backtest Module experimental reports
+Backtest_Module/reports/experiments/
+
+# Experiment Lab runtime outputs & queues
+Experiment_Lab/outbox/
+Experiment_Lab/Backtest_Results/
+Experiment_Lab/Backtest_Logs/
+Experiment_Lab/strategies_templates/processed/
+Experiment_Lab/strategies_templates/non_processed/*
+!Experiment_Lab/strategies_templates/non_processed/.gitkeep
