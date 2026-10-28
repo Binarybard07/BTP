@@ -28,8 +28,15 @@ dependencies = [
     "oauth2client>=4.1.3",
     "watchdog>=6.0.0",
     "python-dotenv>=1.0.1",
-    "scikit-learn>=1.9.1"
+    "scikit-learn>=1.9.1",
+    "qbeast-backtest"
 ]
+
+[tool.uv.workspace]
+members = ["Backtest_Module"]
+
+[tool.uv.sources]
+qbeast-backtest = { workspace = true }
 
 [project.scripts]
 equity-strategy = "equity_strategy:main"
