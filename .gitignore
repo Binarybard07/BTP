@@ -21,6 +21,7 @@ wheels/
 Resources/
 nautilus_trader/
 *.env
+*.sif
 
 # Backtest Module experimental reports
 Backtest_Module/reports/experiments/
