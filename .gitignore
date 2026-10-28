@@ -20,6 +20,7 @@ wheels/
 *.json
 Resources/
 nautilus_trader/
+RM_TM_TF_Combo/
 *.env
 *.sif
 
