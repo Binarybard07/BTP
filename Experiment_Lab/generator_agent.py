@@ -18,8 +18,11 @@ import logging
 from pathlib import Path
 import pprint
 import sys
+import time
 from typing import Any, Dict, List, Tuple
 from jinja2 import Environment, FileSystemLoader
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 import yaml
 
 # ─────────────────────────────────────────────
@@ -205,49 +208,109 @@ def render_and_write_scripts(combos: List[Dict[str, Any]], tmpl_name: str, jinja
     return written
 
 
-def generate_all() -> int:
-    """Execute combination generation for all templates in inbox and move completed templates to processed/."""
-    logger.info(f"Loading configuration from {CONFIG_FILE}...")
-    cfg = load_lab_config(CONFIG_FILE)
-    mode = cfg.get("mode", "ofat")
+class TemplateHandler(FileSystemEventHandler):
+    """Watches strategies_templates/non_processed/ and generates combinations upon new templates."""
 
+    def __init__(self, jinja_env: Environment):
+        super().__init__()
+        self.jinja_env = jinja_env
+        self._processed_files = set()
+
+    def on_created(self, event):
+        if event.is_directory:
+            return
+        src_path = Path(event.src_path)
+        if not (src_path.name.endswith(".jinja") or src_path.name.endswith(".py")):
+            return
+        if src_path.name.startswith("."):
+            return
+
+        time.sleep(0.5)  # Allow file write to complete
+        self.process_template(src_path)
+
+    def process_template(self, tmpl_file: Path) -> bool:
+        if not tmpl_file.exists():
+            return False
+        tmpl_name = tmpl_file.name
+        if tmpl_name in self._processed_files:
+            return False
+
+        main_filename = tmpl_name.replace(".jinja", "").replace(".py", "")
+        logger.info(f"Processing template: '{tmpl_name}' (main_filename: '{main_filename}')")
+
+        try:
+            cfg = load_lab_config(CONFIG_FILE)
+            mode = cfg.get("mode", "ofat")
+            combos = generate_combinations_from_config(cfg, main_filename)
+            logger.info(f"Mode: '{mode.upper()}' | Generated {len(combos)} distinct experiment combination(s).")
+
+            written = render_and_write_scripts(combos, tmpl_name, self.jinja_env)
+            logger.info(f"Successfully staged {written} executable strategy script(s) into {OUTBOX_NON_PROCESSED}")
+
+            # Once all combos of a template are generated, move the template to processed folder
+            PROCESSED_TEMPLATES.mkdir(parents=True, exist_ok=True)
+            dest_template = PROCESSED_TEMPLATES / tmpl_name
+            if dest_template.exists():
+                dest_template.unlink()
+            shutil.move(str(tmpl_file), str(dest_template))
+            self._processed_files.add(tmpl_name)
+            logger.info(f"Moved processed template -> {dest_template}")
+            return True
+        except Exception as e:
+            logger.exception(f"Failed to process template {tmpl_name}: {e}")
+            return False
+
+
+def bootstrap(handler: TemplateHandler):
+    """Pick up any templates already sitting in non_processed/ at startup."""
+    template_files = sorted(list(INBOX.glob("*.jinja")) + list(INBOX.glob("*.py")))
+    valid_templates = [f for f in template_files if not f.name.startswith(".")]
+    if not valid_templates:
+        logger.info(f"No pending strategy templates found in {INBOX}")
+        return
+    logger.info(f"Bootstrapping {len(valid_templates)} existing template(s)...")
+    for t_file in valid_templates:
+        handler.process_template(t_file)
+
+
+def generate_all() -> int:
+    """One-pass execution for all templates currently sitting in non_processed/."""
     jinja_env = Environment(
         loader=FileSystemLoader(str(INBOX)),
         trim_blocks=True,
         lstrip_blocks=True,
     )
+    handler = TemplateHandler(jinja_env)
+    bootstrap(handler)
+    return len(handler._processed_files)
 
-    template_files = list(INBOX.glob("*.jinja")) + list(INBOX.glob("*.py"))
-    if not template_files:
-        logger.info(f"No pending strategy templates found in {INBOX}")
-        return 0
 
-    total_written = 0
-    for tmpl_file in template_files:
-        tmpl_name = tmpl_file.name
-        main_filename = tmpl_name.replace(".jinja", "").replace(".py", "")
-        logger.info(f"Processing template: '{tmpl_name}' (main_filename: '{main_filename}')")
+def main():
+    """Run generator agent in continuous observer mode, processing pending files first."""
+    logger.info("Generator-agent starting up...")
+    jinja_env = Environment(
+        loader=FileSystemLoader(str(INBOX)),
+        trim_blocks=True,
+        lstrip_blocks=True,
+    )
+    handler = TemplateHandler(jinja_env)
 
-        combos = generate_combinations_from_config(cfg, main_filename)
-        logger.info(f"Mode: '{mode.upper()}' | Generated {len(combos)} distinct experiment combination(s).")
+    logger.info("Bootstrapping existing templates...")
+    bootstrap(handler)
 
-        written = render_and_write_scripts(combos, tmpl_name, jinja_env)
-        total_written += written
-        logger.info(f"Successfully staged {written} executable strategy script(s) into {OUTBOX_NON_PROCESSED}")
+    logger.info(f"Watching for new strategy templates in {INBOX}/ ...")
+    observer = Observer()
+    observer.schedule(handler, str(INBOX), recursive=False)
+    observer.start()
 
-        # Once all combos of a template are generated, move the template to processed folder
-        PROCESSED_TEMPLATES.mkdir(parents=True, exist_ok=True)
-        dest_template = PROCESSED_TEMPLATES / tmpl_name
-        try:
-            if dest_template.exists():
-                dest_template.unlink()
-            shutil.move(str(tmpl_file), str(dest_template))
-            logger.info(f"Moved processed template -> {dest_template}")
-        except Exception as e:
-            logger.exception(f"Failed to move template {tmpl_name} to {PROCESSED_TEMPLATES}: {e}")
-
-    return total_written
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("Shutdown requested, stopping generator agent.")
+        observer.stop()
+    observer.join()
 
 
 if __name__ == "__main__":
-    generate_all()
+    main()

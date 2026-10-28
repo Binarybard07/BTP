@@ -23,6 +23,8 @@ import subprocess
 import sys
 import time
 from typing import Optional
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 import yaml
 
 # ─────────────────────────────────────────────
@@ -90,7 +92,6 @@ def load_execution_settings() -> dict:
 
 EXEC_SETTINGS = load_execution_settings()
 MAX_WORKERS = int(EXEC_SETTINGS.get("max_workers", 2))
-SKIP_COMPLETED = bool(EXEC_SETTINGS.get("skip_completed", True))
 TIMEOUT_SECONDS = int(EXEC_SETTINGS.get("timeout_seconds", 1800))
 
 executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
@@ -134,31 +135,7 @@ def run_and_archive(script_path: Path) -> bool:
     meta_path = script_path.with_suffix(".json")
 
     try:
-        summary_file = find_summary_file(run_id)
-
-        # 1. Check resume policy
-        if SKIP_COMPLETED and summary_file and summary_file.exists() and summary_file.stat().st_size > 0:
-            logger.info(f"[RESUME] Found existing valid summary for {run_id} at {summary_file}. Skipping execution.")
-            staging_folder.mkdir(parents=True, exist_ok=True)
-            # Copy all produced components from report directory
-            copy_all_run_components(summary_file.parent, staging_folder)
-            shutil.copy2(script_path, staging_folder / script_name)
-            if meta_path.exists():
-                shutil.copy2(meta_path, staging_folder / meta_path.name)
-
-            # Move script to processed
-            dest_script = SCRIPTS_PROCESSED / script_name
-            shutil.move(str(script_path), str(dest_script))
-            if meta_path.exists():
-                shutil.move(str(meta_path), str(SCRIPTS_PROCESSED / meta_path.name))
-
-            dest_results = BACKTEST_RESULTS_INBOX / run_id
-            if dest_results.exists():
-                shutil.rmtree(dest_results)
-            shutil.move(str(staging_folder), str(dest_results))
-            return True
-
-        # 2. Prepare staging folder
+        # 1. Prepare staging folder
         staging_folder.mkdir(parents=True, exist_ok=True)
         shutil.copy2(script_path, staging_folder / script_name)
         if meta_path.exists():
@@ -252,26 +229,96 @@ def run_and_archive(script_path: Path) -> bool:
         return False
 
 
+class ComboHandler(FileSystemEventHandler):
+    """Watches outbox/non_processed/ for executable strategy scripts."""
+
+    def __init__(self):
+        super().__init__()
+        self.running_futures = set()
+        self._submitted = set()
+
+    def on_created(self, event):
+        if event.is_directory or not event.src_path.endswith(".py"):
+            return
+        script_path = Path(event.src_path)
+        if script_path.name.startswith("."):
+            return
+        if script_path.name in self._submitted:
+            return
+
+        time.sleep(0.5)  # Allow file write to complete
+        self.submit_script(script_path)
+
+    def submit_script(self, script_path: Path):
+        if not script_path.exists():
+            return
+        if script_path.name in self._submitted:
+            return
+        self._submitted.add(script_path.name)
+        logger.info(f"Submitting backtest task: {script_path.name}")
+        future = executor.submit(run_and_archive, script_path)
+        self.running_futures.add(future)
+        future.add_done_callback(self.running_futures.discard)
+
+
+def bootstrap_existing(handler: ComboHandler) -> ComboHandler:
+    """Run any .py combo scripts already sitting in outbox/non_processed/ at startup."""
+    pending = sorted(list(SCRIPTS_INBOX.glob("*.py")))
+    valid_scripts = [p for p in pending if not p.name.startswith(".")]
+    if not valid_scripts:
+        logger.info(f"No pending combo scripts found in {SCRIPTS_INBOX}")
+        return handler
+
+    logger.info(f"Bootstrapping {len(valid_scripts)} existing combo script(s)...")
+    for script_path in valid_scripts:
+        handler.submit_script(script_path)
+
+    # Wait for all bootstrap tasks to complete before watching
+    if handler.running_futures:
+        logger.info(f"Waiting for {len(handler.running_futures)} bootstrap task(s) to finish...")
+        for future in as_completed(list(handler.running_futures)):
+            try:
+                future.result()
+            except Exception as e:
+                logger.exception(f"Error in bootstrap task: {e}")
+
+    return handler
+
+
 def run_all_pending() -> int:
-    """Run all pending strategy scripts in outbox/non_processed/."""
-    pending = list(SCRIPTS_INBOX.glob("*.py"))
-    total = len(pending)
-    logger.info(f"Found {total} pending strategy script(s) in {SCRIPTS_INBOX}")
-    if not pending:
-        return 0
+    """Run all pending strategy scripts in outbox/non_processed/ (one-pass)."""
+    handler = ComboHandler()
+    bootstrap_existing(handler)
+    return len(handler._submitted)
 
-    success_count = 0
-    futures = [executor.submit(run_and_archive, p) for p in pending]
-    for future in as_completed(futures):
-        try:
-            if future.result():
-                success_count += 1
-        except Exception as e:
-            logger.exception(f"Task raised error: {e}")
 
-    logger.info(f"Execution batch completed: {success_count}/{total} runs succeeded.")
-    return success_count
+def main():
+    """Main runner agent entrypoint: process pending combo scripts first, then observe for new ones."""
+    logger.info("Runner-agent starting up...")
+    handler = ComboHandler()
+    bootstrap_existing(handler)
+
+    logger.info(f"Watching for new combo scripts in {SCRIPTS_INBOX}/ ...")
+    observer = Observer()
+    observer.schedule(handler, str(SCRIPTS_INBOX), recursive=False)
+    observer.start()
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("Shutdown requested, stopping runner agent.")
+        observer.stop()
+        if handler.running_futures:
+            logger.info(f"Waiting for {len(handler.running_futures)} running task(s) to complete...")
+            for future in as_completed(list(handler.running_futures)):
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.exception(f"Error in remaining task: {e}")
+    observer.join()
+    executor.shutdown(wait=True)
 
 
 if __name__ == "__main__":
-    run_all_pending()
+    main()

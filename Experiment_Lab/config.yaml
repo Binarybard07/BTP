@@ -17,7 +17,6 @@ mode: "ofat"
 # Concurrency & Execution Control
 execution:
   max_workers: 2            # Parallel backtest runner limit
-  skip_completed: true      # Resume policy: do not rerun if summary.json exists
   timeout_seconds: 1800     # Maximum execution time per backtest (seconds)
 
 # ------------------------------------------------------------------------------

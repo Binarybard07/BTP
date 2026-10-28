@@ -22,6 +22,8 @@ from typing import Any, Dict, List, Optional
 import openpyxl
 from openpyxl.styles import Font, PatternFill
 import pandas as pd
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
 # ─────────────────────────────────────────────
 # PATHS CONFIGURATION
@@ -214,17 +216,65 @@ def format_worksheet(ws, df: pd.DataFrame):
         pass
 
 
-def process_all_pending() -> int:
-    """Process all completed runs waiting in Backtest_Results/non_processed/."""
-    subdirs = [p for p in NEW_DIR.iterdir() if p.is_dir()]
-    total = len(subdirs)
-    logger.info(f"Found {total} pending results folder(s) in {NEW_DIR}")
-    if not subdirs:
-        return 0
+class BatchHandler(FileSystemEventHandler):
+    """Watches Backtest_Results/non_processed/ for new run output folders."""
 
+    def __init__(self):
+        super().__init__()
+        self._processed = set()
+
+    def on_created(self, event):
+        if not event.is_directory:
+            return
+        folder_path = Path(event.src_path)
+        if folder_path.name.startswith("."):
+            return
+        if folder_path.name in self._processed:
+            return
+
+        time.sleep(1.0)  # Allow folder and file copies to settle
+        self.process_batch(folder_path)
+
+    def process_batch(self, folder_path: Path) -> bool:
+        if not folder_path.exists() or not folder_path.is_dir():
+            return False
+        if folder_path.name in self._processed:
+            return False
+
+        logger.info(f"Processing results folder: {folder_path.name}")
+        try:
+            data = extract_run_data(folder_path)
+            if not data:
+                logger.warning(f"No valid run data extracted from {folder_path.name}")
+                return False
+
+            df_master = load_existing_df()
+            df_new = pd.DataFrame([data])
+            df_updated = pd.concat([df_master, df_new], ignore_index=True)
+            write_styled_excel(df_updated)
+
+            dest = DONE_DIR / folder_path.name
+            if dest.exists():
+                shutil.rmtree(dest)
+            shutil.move(str(folder_path), str(dest))
+            self._processed.add(folder_path.name)
+            logger.info(f"Archived all run components -> {dest}")
+            return True
+        except Exception as e:
+            logger.exception(f"Error processing batch {folder_path.name}: {e}")
+            return False
+
+
+def bootstrap_existing(handler: BatchHandler):
+    """Process any folders already in Backtest_Results/non_processed/ at startup in batch."""
+    subdirs = sorted([p for p in NEW_DIR.iterdir() if p.is_dir() and not p.name.startswith(".")])
+    if not subdirs:
+        logger.info(f"No pending results folders in {NEW_DIR}")
+        return
+
+    logger.info(f"Bootstrapping {len(subdirs)} existing results folder(s)...")
     df_master = load_existing_df()
     new_rows = []
-    processed = 0
 
     for folder in subdirs:
         try:
@@ -235,19 +285,43 @@ def process_all_pending() -> int:
                 if dest.exists():
                     shutil.rmtree(dest)
                 shutil.move(str(folder), str(dest))
-                processed += 1
+                handler._processed.add(folder.name)
                 logger.info(f"Archived all run components -> {dest}")
         except Exception as e:
-            logger.exception(f"Error processing {folder.name}: {e}")
+            logger.exception(f"Error bootstrapping {folder.name}: {e}")
 
     if new_rows:
         df_new = pd.DataFrame(new_rows)
         df_updated = pd.concat([df_master, df_new], ignore_index=True)
         write_styled_excel(df_updated)
 
-    logger.info(f"Results processing completed: {processed}/{total} folders processed.")
-    return processed
+
+def process_all_pending() -> int:
+    """Process all completed runs waiting in Backtest_Results/non_processed/ (one-pass)."""
+    handler = BatchHandler()
+    bootstrap_existing(handler)
+    return len(handler._processed)
+
+
+def main():
+    """Main result agent entrypoint: process pending folders first, then observe for new ones."""
+    logger.info("Result-agent starting up...")
+    handler = BatchHandler()
+    bootstrap_existing(handler)
+
+    logger.info(f"Watching for new backtest folders in {NEW_DIR}/ ...")
+    observer = Observer()
+    observer.schedule(handler, str(NEW_DIR), recursive=False)
+    observer.start()
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("Shutdown requested, stopping result agent.")
+        observer.stop()
+    observer.join()
 
 
 if __name__ == "__main__":
-    process_all_pending()
+    main()

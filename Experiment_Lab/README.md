@@ -102,17 +102,31 @@ All outputs, reports, and artifacts produced by `Backtest_Module` for each run a
 
 ---
 
-## 5. Execution (No Flags Required)
+## 5. Autonomous & Parallel Execution (No Flags Required)
 
-Direct execution for all scripts without requiring any command-line flags:
+Each agent in `Experiment_Lab` is an **autonomous watcher**:
+1. At startup, it first processes all pending items in its queue / backlog.
+2. It then activates a file watcher (`watchdog.observers.Observer`) to monitor and react to new items in real time.
+3. All agents run completely in parallel and independently.
 
+### Running All Agents Together
 ```bash
-# Run the complete end-to-end experiment pipeline:
+# Launches all 4 agents concurrently in parallel:
 python Experiment_Lab/run_lab.py
+```
 
-# Or run individual agents independently:
-python Experiment_Lab/generator_agent.py   # Generates scripts into outbox/non_processed/
-python Experiment_Lab/runner_agent.py      # Executes pending backtest scripts
-python Experiment_Lab/result_agent.py      # Parses results into metrics.xlsx
-python Experiment_Lab/google_sheets.py     # Synchronizes metrics to Google Sheets
+### Running Agents Independently
+You can also run any agent independently in its own terminal or background session:
+```bash
+# 1. Generator Agent: watches strategies_templates/non_processed/
+python Experiment_Lab/generator_agent.py
+
+# 2. Runner Agent: watches outbox/non_processed/
+python Experiment_Lab/runner_agent.py
+
+# 3. Result Agent: watches Backtest_Results/non_processed/
+python Experiment_Lab/result_agent.py
+
+# 4. Google Sheets Sync: watches Backtest_Results/metrics.xlsx
+python Experiment_Lab/google_sheets.py
 ```

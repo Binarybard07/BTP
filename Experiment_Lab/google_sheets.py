@@ -13,12 +13,15 @@ import logging
 import os
 from pathlib import Path
 import sys
+import time
 from typing import Optional
 from dotenv import load_dotenv
 import gspread
 from gspread.exceptions import WorksheetNotFound
 from oauth2client.service_account import ServiceAccountCredentials
 import pandas as pd
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
 load_dotenv()
 
@@ -178,5 +181,58 @@ def sync_metrics_to_sheets() -> bool:
         return False
 
 
+class MetricsHandler(FileSystemEventHandler):
+    """Watches Backtest_Results/ directory for modifications to metrics.xlsx."""
+
+    def __init__(self):
+        super().__init__()
+        self._last_sync = 0.0
+
+    def on_modified(self, event):
+        if event.is_directory:
+            return
+        if Path(event.src_path).name == "metrics.xlsx":
+            now = time.time()
+            if now - self._last_sync < 2.0:
+                return
+            self._last_sync = now
+            logger.info("Detected change to metrics.xlsx; syncing to Google Sheets...")
+            time.sleep(1.0)
+            sync_metrics_to_sheets()
+
+    def on_created(self, event):
+        if event.is_directory:
+            return
+        if Path(event.src_path).name == "metrics.xlsx":
+            logger.info("Detected creation of metrics.xlsx; syncing to Google Sheets...")
+            time.sleep(1.0)
+            sync_metrics_to_sheets()
+
+
+def main():
+    """Run Google Sheets sync agent in continuous observer mode, syncing pending metrics first."""
+    logger.info("Google Sheets agent starting up...")
+    # Initial sync if metrics.xlsx already exists
+    if METRICS_FILE.exists() and METRICS_FILE.stat().st_size > 0:
+        logger.info(f"Initial sync of existing {METRICS_FILE.name}...")
+        sync_metrics_to_sheets()
+    else:
+        logger.info(f"No existing {METRICS_FILE.name} found at startup. Waiting for updates...")
+
+    logger.info(f"Watching for changes to {METRICS_FILE.name} in {BACKTEST_DIR}/ ...")
+    handler = MetricsHandler()
+    observer = Observer()
+    observer.schedule(handler, str(BACKTEST_DIR), recursive=False)
+    observer.start()
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("Shutdown requested, stopping Google Sheets agent.")
+        observer.stop()
+    observer.join()
+
+
 if __name__ == "__main__":
-    sync_metrics_to_sheets()
+    main()
