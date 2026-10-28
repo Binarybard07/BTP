@@ -34,6 +34,7 @@ from qbeast_backtest.config import COST_PCT, INITIAL_CAPITAL, OUT_DIR, POINT_IN_
 from qbeast_backtest.engine import liquidity_slippage
 from qbeast_backtest.membership import Membership
 from qbeast_backtest.nautilus_backtest import VENUE, RegimeFeeModel, build_engine, index_instrument_symbol, make_equity
+from qbeast_exec.nautilus import make_bars
 from qbeast_backtest.nautilus_books import export_books
 from qbeast_backtest import config as C
 from qbeast_backtest import slippage_model as SM

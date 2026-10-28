@@ -23,7 +23,7 @@ from __future__ import annotations
 from .xgboost_regressor_strategy import XGBoostRegressorStrategy
 
 REGISTRY: dict = {
-    XGBoostRegressorStrategy.name: XGBoostRegressorStrategy,
+    XGBoostRegressorStrategy.name.lower(): XGBoostRegressorStrategy,
 }
 
 DEFAULT = XGBoostRegressorStrategy.name

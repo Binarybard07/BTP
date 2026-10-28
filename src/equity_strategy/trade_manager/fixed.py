@@ -3,7 +3,7 @@ Fixed-percentage take-profit and stop-loss trade manager.
 """
 from typing import Optional, Tuple, Union
 
-from nautilus_trader.model import InstrumentId
+from nautilus_trader.model.identifiers import InstrumentId
 
 from equity_strategy.trade_manager.base import BaseTradeManager
 

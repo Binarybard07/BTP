@@ -5,8 +5,9 @@ import math
 from typing import Dict, Optional, Sequence, Tuple, Union
 
 from nautilus_trader.indicators import AverageTrueRange
-from nautilus_trader.model import BarType, InstrumentId
-from nautilus_trader.trading import Strategy
+from nautilus_trader.model.data import BarType
+from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.trading.strategy import Strategy
 
 from equity_strategy.trade_manager.base import BaseTradeManager
 

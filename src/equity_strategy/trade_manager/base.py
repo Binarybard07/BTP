@@ -4,7 +4,8 @@ Abstract base class for take-profit and stop-loss calculation trade managers.
 from abc import ABC, abstractmethod
 from typing import Any, Optional, Sequence, Tuple, Union
 
-from nautilus_trader.model import BarType, InstrumentId
+from nautilus_trader.model.data import BarType
+from nautilus_trader.model.identifiers import InstrumentId
 
 
 class BaseTradeManager(ABC):

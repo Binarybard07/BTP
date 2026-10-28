@@ -75,7 +75,7 @@ def rebalance_dates(cal: pd.DatetimeIndex) -> set:
         keys = [cal.year, cal.quarter]
     else:                                                 # monthly (default)
         keys = [cal.year, cal.month]
-    return set(s.groupby(keys).first())
+    return set(s.groupby(keys).last())
 
 
 # ===================================================================================================

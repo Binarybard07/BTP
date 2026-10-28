@@ -19,44 +19,28 @@ MarketData and StrategyOutput contracts:
 """
 from __future__ import annotations
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import os
 import sys
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
-
-import numpy as np
 import pandas as pd
+from typing import Any, Dict, List
 
-# Ensure equity_strategy and Backtest_Module/src are on sys.path regardless of execution CWD
-_CURRENT_DIR = Path(__file__).resolve().parent
-_REPO_ROOT = Path(__file__).resolve().parents[4]  # c:\Users\Jenish\Desktop\SEM VII\BTP
-_SRC_DIR = _REPO_ROOT / "src"
-_BM_SRC_DIR = Path(__file__).resolve().parents[2]  # .../Backtest_Module/src
-
-if str(_SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(_SRC_DIR))
-if str(_BM_SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(_BM_SRC_DIR))
-
-# Ensure local data root and default universe are initialized if not externally set
-if "QBEAST_BACKTEST_UNIVERSE" not in os.environ:
-    os.environ["QBEAST_BACKTEST_UNIVERSE"] = "nifty100"
-
-if "QBEAST_DATA_ROOT" not in os.environ:
-    _local_data = _REPO_ROOT / "data" / "Final_Without_Survivorship_Data"
-    if _local_data.exists():
-        os.environ["QBEAST_DATA_ROOT"] = str(_local_data)
-
-from qbeast_backtest import config as C
 from qbeast_backtest.contracts import MarketData, StrategyOutput
 from qbeast_backtest.stage2_strategy.base import StrategyBase
 
 from equity_strategy.data.training_dataset import FEATURE_COLUMNS, TARGET_COLUMN, TrainingDatasetBuilder
 from equity_strategy.features.engine import FeatureEngine
-from equity_strategy.models.xgboost_regressor import XGBoostRegressor
-from equity_strategy.portfolio.equal_weight import EqualWeightPortfolio
-from equity_strategy.selection.percentile import PercentileSelector
 from equity_strategy.targets.engine import TargetEngine
+from equity_strategy.models.base import BaseModel
+from equity_strategy.models.xgboost_regressor import XGBoostRegressor
+from equity_strategy.portfolio.base import BasePortfolio
+from equity_strategy.portfolio.equal_weight import EqualWeightPortfolio
+from equity_strategy.selection.base import BaseSelector
+from equity_strategy.selection.percentile import PercentileSelector
+from equity_strategy.risk_management.base import BaseRiskManager
+from equity_strategy.risk_management.fixed_percentage import FixedPercentageRiskManager
 
 
 class XGBoostRegressorStrategy(StrategyBase):
@@ -66,76 +50,36 @@ class XGBoostRegressorStrategy(StrategyBase):
     Strictly satisfies contracts.Strategy and inherits StrategyBase.
     """
 
-    name: str = "xgboost_regressor"
+    name: str = "XGBoost_Regressor"
 
     def __init__(
         self,
-        rebalance_frequency: str = "monthly",
-        selector: str = "percentile",
-        percentile: float = 85.0,
-        top_n: Optional[int] = None,
-        weighting: str = "equal",
-        stop_loss_pct: Optional[float] = None,
-        take_profit_pct: Optional[float] = None,
-        max_deployment_pct: float = 0.75,
+        feature_engine: FeatureEngine = None,
+        feature_columns: List[str] = list(FEATURE_COLUMNS),
+        target_engine: TargetEngine = None,
         target_horizon: int = 10,
+        target_column: str = TARGET_COLUMN,
+        model: BaseModel = None,
+        model_params: Dict[str, Any] = {},
         min_train_days: int = 252,
-        n_estimators: int = 100,
-        max_depth: int = 3,
-        learning_rate: float = 0.05,
-        subsample: float = 0.8,
-        colsample_bytree: float = 0.8,
-        random_state: int = 42,
-        n_jobs: int = -1,
+        selector: BaseSelector = None,
+        portfolio: BasePortfolio = None,
+        risk_manager: BaseRiskManager = None,
+        rebalance_frequency: str = "monthly",
         **kwargs: Any,
     ) -> None:
-        self.rebalance_frequency = rebalance_frequency
-        self.selector_name = selector
-        self.percentile = float(percentile)
-        self.top_n = top_n
-        self.weighting = weighting
-        self.stop_loss_pct = stop_loss_pct
-        self.take_profit_pct = take_profit_pct
-        self.max_deployment_pct = float(max_deployment_pct)
+        self.feature_engine = feature_engine
+        self.feature_columns = list(feature_columns)
+        self.target_engine = target_engine
         self.target_horizon = int(target_horizon)
+        self.target_column = str(target_column)
+        self.model = model
+        self.model_params = model_params
         self.min_train_days = int(min_train_days)
-
-        if not (0.0 < self.max_deployment_pct <= 1.0):
-            raise ValueError(
-                f"max_deployment_pct must be in (0, 1], got {self.max_deployment_pct}"
-            )
-
-        if self.selector_name == "percentile":
-            self.selector = PercentileSelector(percentile=self.percentile)
-        else:
-            raise ValueError(
-                f"Unsupported selector {self.selector_name!r}. Expected 'percentile'."
-            )
-
-        if self.weighting == "equal":
-            self.portfolio = EqualWeightPortfolio()
-        else:
-            raise ValueError(
-                f"Unsupported weighting {self.weighting!r}. Expected 'equal'."
-            )
-
-        self.model_params: Dict[str, Any] = {
-            "n_estimators": n_estimators,
-            "max_depth": max_depth,
-            "learning_rate": learning_rate,
-            "subsample": subsample,
-            "colsample_bytree": colsample_bytree,
-            "random_state": random_state,
-            "n_jobs": n_jobs,
-        }
-
-        self.feature_columns: List[str] = list(FEATURE_COLUMNS)
-        self.target_column: str = (
-            f"target_{self.target_horizon}d" if self.target_horizon != 10 else TARGET_COLUMN
-        )
-
-        self.feature_engine = FeatureEngine()
-        self.target_engine = TargetEngine(horizon=self.target_horizon, target_col=self.target_column)
+        self.selector = selector
+        self.portfolio = portfolio
+        self.risk_manager = risk_manager
+        self.rebalance_frequency = rebalance_frequency
 
     def decide(self, md: MarketData) -> StrategyOutput:
         """
@@ -165,60 +109,49 @@ class XGBoostRegressorStrategy(StrategyBase):
             feature_engine=self.feature_engine,
             target_engine=self.target_engine,
         )
-        training_df = builder.build(featured_df)
+        full_dataset = builder.build(featured_df)
 
-        # 4. Map historical trading calendar to establish chronological indexes
-        all_trading_dates: List[pd.Timestamp] = list(closes.index.sort_values().unique())
-        date_to_idx: Dict[pd.Timestamp, int] = {d: i for i, d in enumerate(all_trading_dates)}
+        # 4. Resolve decision dates matching the strategy's rebalance frequency
+        decision_dates = sorted(self.decision_sessions(md))
 
         targets: Dict[pd.Timestamp, Dict[str, float]] = {}
         exposure: Dict[pd.Timestamp, float] = {}
         posture: Dict[pd.Timestamp, str] = {}
 
-        # 5. Evaluate decisions strictly on decision sessions (excluding final session in backtest)
-        decision_sessions = self.decision_sessions(md)
+        # 5. Expanding-window walk-forward training & prediction loop
+        # Use full historical calendar so pre-window history is used for model training and warm-up
+        full_calendar = md.history_closes.index
 
-        for t in decision_sessions:
+        for t_idx, t in enumerate(decision_dates):
             t_ts = pd.Timestamp(t)
-            if t_ts not in date_to_idx:
+
+            # Target realization cutoff: target realized over `target_horizon` sessions.
+            # Observations beyond cutoff have unobserved forward returns -> exclude to avoid leak.
+            cal_until_t = full_calendar[full_calendar <= t_ts]
+            if len(cal_until_t) <= self.target_horizon:
                 targets[t_ts] = {}
                 exposure[t_ts] = 0.0
                 posture[t_ts] = "cash"
                 continue
 
-            date_idx = date_to_idx[t_ts]
+            cutoff_date = cal_until_t[-self.target_horizon]
+            eligible_train = full_dataset[full_dataset["Date"] < cutoff_date]
 
-            # Require minimum historical trading days before first deployment
-            if date_idx < self.min_train_days:
+            unique_train_days = eligible_train["Date"].nunique()
+            if unique_train_days < self.min_train_days:
                 targets[t_ts] = {}
                 exposure[t_ts] = 0.0
                 posture[t_ts] = "cash"
                 continue
 
-            # Prevent target leakage: cutoff at T - target_horizon
-            cutoff_idx = date_idx - self.target_horizon
-            if cutoff_idx < 0:
-                targets[t_ts] = {}
-                exposure[t_ts] = 0.0
-                posture[t_ts] = "cash"
-                continue
+            X_train = eligible_train[self.feature_columns]
+            y_train = eligible_train[self.target_column]
 
-            train_cutoff_date = all_trading_dates[cutoff_idx]
-            train_subset = training_df[training_df["Date"] <= train_cutoff_date]
-            if train_subset.empty:
-                targets[t_ts] = {}
-                exposure[t_ts] = 0.0
-                posture[t_ts] = "cash"
-                continue
-
-            X_train = train_subset[self.feature_columns]
-            y_train = train_subset[self.target_column]
-
-            # Fit fresh XGBoost model on expanding historical window
-            model = XGBoostRegressor(**self.model_params)
+            # Fit fresh model on expanding historical window
+            model = self.model(**self.model_params)
             model.train(X_train, y_train)
 
-            # Query point-in-time tradability / eligibility set
+            # Retrieve eligible tradable symbols on decision date (Stage 1 point-in-time filter)
             elig = self.eligible_on(md, t_ts)
             if not elig:
                 targets[t_ts] = {}
@@ -226,7 +159,7 @@ class XGBoostRegressorStrategy(StrategyBase):
                 posture[t_ts] = "cash"
                 continue
 
-            # Cross-sectional features on decision session T filtered strictly to eligible set
+            # Feature vectors for eligible symbols on current decision date
             current_bar_data = featured_df[
                 (featured_df["Date"] == t_ts) & (featured_df["Symbol"].isin(elig))
             ].copy()
@@ -254,7 +187,7 @@ class XGBoostRegressorStrategy(StrategyBase):
                 posture[t_ts] = "cash"
                 continue
 
-            # Construct equal-weighted portfolio allocations
+            # Construct weighted portfolio allocations
             raw_weights = self.portfolio.construct(selected_symbols)
             if not raw_weights:
                 targets[t_ts] = {}
@@ -263,8 +196,11 @@ class XGBoostRegressorStrategy(StrategyBase):
                 continue
 
             # Apply maximum capital deployment fraction (e.g. 0.75)
+            # Normalized budget fraction: 1.0 represents 100% of current equity
+            deployment_fraction = self.risk_manager.calculate_deployment_budget(1.0)
+
             target_weights = {
-                sym: float(w * self.max_deployment_pct)
+                sym: float(w * deployment_fraction)
                 for sym, w in raw_weights.items()
             }
 
@@ -279,21 +215,22 @@ class XGBoostRegressorStrategy(StrategyBase):
             posture=pd.Series(posture).sort_index() if posture else None,
             name=self.name,
             params=dict(
-                rebalance_frequency=self.rebalance_frequency,
-                selector=self.selector_name,
-                percentile=self.percentile,
-                top_n=self.top_n,
-                weighting=self.weighting,
-                stop_loss_pct=self.stop_loss_pct,
-                take_profit_pct=self.take_profit_pct,
-                max_deployment_pct=self.max_deployment_pct,
+                feature_engine=type(self.feature_engine).__name__ ,
+                feature_columns=self.feature_columns,
+                target_engine=type(self.target_engine).__name__,
                 target_horizon=self.target_horizon,
+                target_column=self.target_column,
+                model=self.model.__name__,
+                model_params=self.model_params,
                 min_train_days=self.min_train_days,
+                selector=type(self.selector).__name__,
+                portfolio=type(self.portfolio).__name__ ,
+                risk_manager=type(self.risk_manager).__name__,
+                rebalance_frequency=self.rebalance_frequency
             ),
         )
 
-        cash_buffer = float(getattr(C, "CASH_BUFFER", 0.97))
-        self.self_check(md, output, cash_buffer=cash_buffer, strict=True)
+        self.self_check(md, output, strict=True)
         return output
 
 
@@ -301,59 +238,55 @@ def main() -> int:
     """
     Runnable entrypoint executing XGBoostRegressorStrategy through Backtest_Module on NautilusTrader.
     """
-    # 1. Environment defaults (set before importing config/pipeline)
-    if "QBEAST_BACKTEST_UNIVERSE" not in os.environ:
-        os.environ["QBEAST_BACKTEST_UNIVERSE"] = "nifty100"
-
-    if "QBEAST_DATA_ROOT" not in os.environ:
-        local_data = _REPO_ROOT / "data" / "Final_Without_Survivorship_Data"
-        if local_data.exists():
-            os.environ["QBEAST_DATA_ROOT"] = str(local_data)
-
-    from qbeast_backtest import config as C
-    from qbeast_backtest import pipeline, report
-    from qbeast_backtest.stage2_strategy.registry import REGISTRY
-
-    # 2. Strategy & Backtest Parameters
-    strategy_params = {
-        "rebalance_frequency": "monthly",
-        "selector": "percentile",
-        "percentile": 85.0,
-        "top_n": None,
-        "weighting": "equal",
-        "stop_loss_pct": None,
-        "take_profit_pct": None,
-        "max_deployment_pct": 0.75,
-        "min_train_days": 252,
-        "target_horizon": 10,
+    # ---------------------------------------------------------------------------------------------------
+    # Strategy & Model Configuration: all experiment parameters centralized here
+    # ---------------------------------------------------------------------------------------------------
+    model_params = {
+        "n_estimators": 100,
+        "max_depth": 3,
+        "learning_rate": 0.05,
+        "subsample": 0.8,
+        "colsample_bytree": 0.8,
+        "random_state": 42,
+        "n_jobs": -1,
     }
 
-    # 3. Instantiate strategy explicitly
-    strat = XGBoostRegressorStrategy(
-        rebalance_frequency=strategy_params["rebalance_frequency"],
-        selector=strategy_params["selector"],
-        percentile=strategy_params["percentile"],
-        top_n=strategy_params["top_n"],
-        weighting=strategy_params["weighting"],
-        stop_loss_pct=strategy_params["stop_loss_pct"],
-        take_profit_pct=strategy_params["take_profit_pct"],
-        max_deployment_pct=strategy_params["max_deployment_pct"],
-        min_train_days=strategy_params["min_train_days"],
-        target_horizon=strategy_params["target_horizon"],
-    )
+    strategy_params = {
+        "feature_engine" : FeatureEngine(),
+        "feature_columns": list(FEATURE_COLUMNS),
+        "target_engine": TargetEngine(),
+        "target_horizon": 30,
+        "target_column": TARGET_COLUMN,
+        "model": XGBoostRegressor,
+        "model_params": model_params,
+        "min_train_days": 252*4,
+        "selector": PercentileSelector(percentile=0.85),
+        "portfolio": EqualWeightPortfolio(),
+        "risk_manager": FixedPercentageRiskManager(max_deployment_pct=0.9),
+        "rebalance_frequency": "monthly",
+    }
 
-    # 4. Explicit registration in Stage 2 registry
-    REGISTRY[strat.name] = lambda **kwargs: strat
+    from qbeast_backtest import pipeline, report
+    from qbeast_backtest.stage2_strategy import registry as pkg_registry
+    import importlib
 
-    # 5. Invoke Backtest_Module pipeline exclusively on NautilusTrader
+    # 1. Instantiate strategy explicitly with the centralized configuration block
+    strat = XGBoostRegressorStrategy(**strategy_params)
+
+    # 2. Register configured instance in both package and flat registries so pipeline sees it
+    factory = lambda **kwargs: strat
+    pkg_registry.REGISTRY[strat.name.lower()] = factory
+    flat_registry = importlib.import_module("stage2_strategy.registry")
+    flat_registry.REGISTRY[strat.name.lower()] = factory
+
+    # 3. Explicitly invoke Backtest_Module pipeline exclusively on the Nautilus execution engine
     # Fails clearly if Nautilus is unavailable; never falls back to internal ledger
     result = pipeline.run(strategy=strat.name, engine="nautilus", strict=True)
 
-    # 6. Generate standard Backtest_Module reporting suite
+    # 4. Generate standard Backtest_Module reporting suite
     report.write(result)
 
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
