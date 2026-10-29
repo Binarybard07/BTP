@@ -1,42 +1,34 @@
-#!/usr/bin/env bash
-# ==============================================================================
-# Experiment Lab - Multi-Agent Bootstrap Launcher
-# Mirrors RM_TM_TF_Combo bootstrap.sh architecture for background agent sessions.
-# ==============================================================================
+#!/bin/bash
+#SBATCH --job-name=btp_single
+#SBATCH --partition=fat         # 'small', 'medium', 'large', 'fat' or 'test'
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16         # 16 CPU cores
+#SBATCH --mem=24gb                 # 24 GB memory limit
+#SBATCH --time=2-00:00:00           # 2 days, 0 hours, 0 minutes, 0 seconds maximum
+#SBATCH --output=single_%j.log    # Slurm log file
 
-set -euo pipefail
+echo "==================== SLURM SINGLE JOB START ===================="
+date
+echo "Node: $(hostname)"
+echo "Working directory: $(pwd)"
+echo "Job ID: $SLURM_JOB_ID"
+echo "================================================================"
 
-LAB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PYTHON_BIN="${LAB_DIR}/../.backtest_module/bin/python"
+PROJECT_DIR="/scratch/data/p23et0001/jenish/BTP"
+CONTAINER="${PROJECT_DIR}/container.sif"
+PYTHON_ENV="${PROJECT_DIR}/.venv/bin/python"
+BIND_PATH="/scratch/data/p23et0001:/scratch/data/p23et0001"
+SCRIPT_PATH="Experiment_Lab/run_lab.py"
 
-if [ ! -f "$PYTHON_BIN" ]; then
-  PYTHON_BIN="python3"
-fi
+cd "${PROJECT_DIR}"
 
-start_screen_session() {
-  local session="$1"
-  local script="$2"
+module load singularity/3.7.1 2>/dev/null || module load singularity 2>/dev/null || true
 
-  if screen -ls | grep -q "[[:space:]]${session}[[:space:]]"; then
-    echo ">> Screen session '${session}' is already running - skipping."
-    return
-  fi
+echo ">> Running script: ${SCRIPT_PATH}"
 
-  echo ">> Starting screen session '${session}' -> ${script}"
-  screen -dmS "${session}" bash -lc \
-    "cd '${LAB_DIR}' && exec ${PYTHON_BIN} -u '${script}' || { echo 'FAILED to run ${session}'; sleep 30; }"
-}
+singularity exec --bind "${BIND_PATH}" "${CONTAINER}" \
+    "${PYTHON_ENV}" "${SCRIPT_PATH}"
 
-echo "=========================================================="
-echo "          Launching Experiment Lab Watcher Agents         "
-echo "=========================================================="
-
-start_screen_session "lab_generator" "generator_agent.py"
-start_screen_session "lab_runner"    "runner_agent.py"
-start_screen_session "lab_results"   "result_agent.py"
-start_screen_session "lab_sheets"    "google_sheets.py"
-
-echo "=========================================================="
-echo "All Experiment Lab agent sessions initiated."
-echo "Use 'screen -ls' to inspect running agents."
-echo "=========================================================="
+echo "==================== SLURM SINGLE JOB FINISHED ================"
+date

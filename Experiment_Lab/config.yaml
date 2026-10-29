@@ -18,7 +18,7 @@ engine: "nautilus"
 mode: "ofat"                 # Options: "grid", "ofat", "explicit"
 
 execution:
-  max_workers: 4            # Parallel backtest execution count
+  max_workers: 8            # Parallel backtest execution count
   timeout_seconds: 3600     # 60-minute timeout per backtest
 
 # ------------------------------------------------------------------------------
