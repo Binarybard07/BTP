@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 load_dotenv(override=False)
 
 import sys
+import copy
 import importlib
 import pandas as pd
 from typing import Any, Dict, List
@@ -66,7 +67,6 @@ class XGBoostRegressorStrategy(StrategyBase):
         feature_engine: FeatureEngine,
         target_engine: TargetEngine,
         model: BaseModel,
-        model_params: Dict[str, Any] = {},
         min_train_days: int = 252,
         selector: BaseSelector = None,
         portfolio: BasePortfolio = None,
@@ -77,7 +77,6 @@ class XGBoostRegressorStrategy(StrategyBase):
         self.feature_engine = feature_engine
         self.target_engine = target_engine
         self.model = model
-        self.model_params = model_params
         self.min_train_days = int(min_train_days)
         self.selector = selector
         self.portfolio = portfolio
@@ -161,7 +160,7 @@ class XGBoostRegressorStrategy(StrategyBase):
             y_train = eligible_train[self.target_column]
 
             # Fit fresh model on expanding historical window
-            model = self.model(**self.model_params)
+            model = copy.deepcopy(self.model)
             model.train(X_train, y_train)
 
             # Retrieve eligible tradable symbols on decision date (Stage 1 point-in-time filter)
@@ -232,8 +231,7 @@ class XGBoostRegressorStrategy(StrategyBase):
                 feature_engine_params=_get_params(self.feature_engine),
                 target_engine=type(self.target_engine).__name__,
                 target_engine_params=_get_params(self.target_engine),
-                model=self.model.__name__,
-                model_params=self.model_params,
+                model=type(self.model).__name__,
                 min_train_days=self.min_train_days,
                 selector=type(self.selector).__name__,
                 selector_params=_get_params(self.selector),
@@ -256,8 +254,6 @@ def main() -> int:
     # ---------------------------------------------------------------------------------------------------
     # Strategy & Model Configuration: all experiment parameters centralized here
     # ---------------------------------------------------------------------------------------------------
-    model_params = {{ model_params }}
-
     feature_config = {{ features }}
     feature_engine = FeatureEngine(features=feature_config)
     target_engine = TargetEngine(
@@ -269,8 +265,7 @@ def main() -> int:
     strategy_params = {
         "feature_engine": feature_engine,
         "target_engine": target_engine,
-        "model": {{ model.cls }},
-        "model_params": model_params,
+        "model": {{ model.cls }}(**{{ model.params | default({}) }}),
         "min_train_days": {{ min_train_days }},
         "selector": {{ selector.cls }}(**{{ selector.params | default({}) }}),
         "portfolio": {{ portfolio.cls }}(**{{ portfolio.params | default({}) }}),

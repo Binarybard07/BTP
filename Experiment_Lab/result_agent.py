@@ -121,7 +121,11 @@ def extract_run_data(folder_path: Path) -> Optional[Dict[str, Any]]:
     score = round(0.5 * cagr + 0.5 * maxdd, 4)
 
     strat_params = summary.get("strategy_params", {})
-    model_params = strat_params.get("model_params", {}) or meta_data.get("model_params", {})
+    model_params = (
+        strat_params.get("model_params", {})
+        or meta_data.get("model", {}).get("params", {})
+        or meta_data.get("model_params", {})
+    )
 
     target_cfg = meta_data.get("target", {})
     strat_cfg = meta_data.get("strategy", {})

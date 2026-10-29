@@ -32,20 +32,20 @@ baseline:
   min_train_days: 1260
   target_horizon: 21
 
-  # Model Component
+  # Model Component (Unified contract: pkg, cls, params)
   model:
     pkg: "equity_strategy.models.xgboost_regressor"
     cls: "XGBoostRegressor"
-  model_params:
-    n_estimators: 100
-    max_depth: 3
-    learning_rate: 0.05
-    subsample: 0.8
-    colsample_bytree: 0.8
-    reg_alpha: 0.1
-    reg_lambda: 1.0
-    random_state: 42
-    n_jobs: -1
+    params:
+      n_estimators: 100
+      max_depth: 3
+      learning_rate: 0.05
+      subsample: 0.80
+      colsample_bytree: 0.80
+      reg_alpha: 0.1
+      reg_lambda: 1.0
+      random_state: 42
+      n_jobs: -1
 
   # Selector Component (PercentileSelector)
   selector:
@@ -159,16 +159,14 @@ variations:
   # ----------------------------------------------------------------------------
 
   model:
-    - pkg: "equity_strategy.models.xgboost_regressor"
-      cls: "XGBoostRegressor"
-      params:
-        n_estimators: [50, 100, 200, 300]
-        max_depth: [2, 3, 4, 6]
-        learning_rate: [0.01, 0.03, 0.05, 0.10]
-        subsample: [0.60, 0.80, 1.00]
-        colsample_bytree: [0.60, 0.80, 1.00]
-        reg_alpha: [0.0, 0.1, 1.0]          # L1 regularization (Lasso sparsity)
-        reg_lambda: [0.5, 1.0, 5.0]         # L2 regularization (Ridge shrinkage)
+    params:
+      n_estimators: [50, 100, 200, 300]
+      max_depth: [2, 3, 4, 6]
+      learning_rate: [0.01, 0.03, 0.05, 0.10]
+      subsample: [0.60, 0.80, 1.00]
+      colsample_bytree: [0.60, 0.80, 1.00]
+      reg_alpha: [0.0, 0.1, 1.0]          # L1 regularization (Lasso sparsity)
+      reg_lambda: [0.5, 1.0, 5.0]         # L2 regularization (Ridge shrinkage)
 
   # ----------------------------------------------------------------------------
   # G. SELECTOR METHODS (Plug-and-play with pkg, cls, params)
@@ -402,14 +400,15 @@ explicit_combinations:
       pkg: "equity_strategy.risk_management.fixed_percentage"
       cls: "FixedPercentageRiskManager"
       params: {max_deployment_pct: 0.75}
-    model_params:
-      n_estimators: 100
-      max_depth: 3
-      learning_rate: 0.03
-      subsample: 0.8
-      colsample_bytree: 0.8
-      reg_alpha: 0.1
-      reg_lambda: 1.0
+    model:
+      params:
+        n_estimators: 100
+        max_depth: 3
+        learning_rate: 0.03
+        subsample: 0.8
+        colsample_bytree: 0.8
+        reg_alpha: 0.1
+        reg_lambda: 1.0
 
   # Combo 2: Broad Market Top-20 High Alpha
   - universe: "nifty500_ddq"
@@ -424,14 +423,15 @@ explicit_combinations:
       pkg: "equity_strategy.risk_management.fixed_percentage"
       cls: "FixedPercentageRiskManager"
       params: {max_deployment_pct: 0.90}
-    model_params:
-      n_estimators: 200
-      max_depth: 4
-      learning_rate: 0.05
-      subsample: 0.8
-      colsample_bytree: 0.7
-      reg_alpha: 0.2
-      reg_lambda: 2.0
+    model:
+      params:
+        n_estimators: 200
+        max_depth: 4
+        learning_rate: 0.05
+        subsample: 0.8
+        colsample_bytree: 0.7
+        reg_alpha: 0.2
+        reg_lambda: 2.0
 
   # Combo 3: Weekly Tactical Fast-Momentum Model
   - universe: "nifty100_ddq"
@@ -446,14 +446,15 @@ explicit_combinations:
       pkg: "equity_strategy.risk_management.fixed_percentage"
       cls: "FixedPercentageRiskManager"
       params: {max_deployment_pct: 0.85}
-    model_params:
-      n_estimators: 150
-      max_depth: 3
-      learning_rate: 0.05
-      subsample: 0.7
-      colsample_bytree: 0.7
-      reg_alpha: 0.1
-      reg_lambda: 1.0
+    model:
+      params:
+        n_estimators: 150
+        max_depth: 3
+        learning_rate: 0.05
+        subsample: 0.7
+        colsample_bytree: 0.7
+        reg_alpha: 0.1
+        reg_lambda: 1.0
 
   # Combo 4: Positive Hurdle Threshold Strategy
   - universe: "nifty200_ddq"
@@ -468,11 +469,12 @@ explicit_combinations:
       pkg: "equity_strategy.risk_management.fixed_percentage"
       cls: "FixedPercentageRiskManager"
       params: {max_deployment_pct: 0.85}
-    model_params:
-      n_estimators: 100
-      max_depth: 3
-      learning_rate: 0.03
-      subsample: 0.8
-      colsample_bytree: 0.8
-      reg_alpha: 0.1
-      reg_lambda: 1.0
+    model:
+      params:
+        n_estimators: 100
+        max_depth: 3
+        learning_rate: 0.03
+        subsample: 0.8
+        colsample_bytree: 0.8
+        reg_alpha: 0.1
+        reg_lambda: 1.0

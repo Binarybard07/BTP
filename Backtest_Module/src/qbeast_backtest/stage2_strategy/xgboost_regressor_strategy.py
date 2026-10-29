@@ -31,6 +31,7 @@ os.environ["QBEAST_BACKTEST_END"] = os.environ.get("QBEAST_BACKTEST_END", "2027-
 os.environ["REBALANCE_FREQ"] = os.environ.get("REBALANCE_FREQ", "monthly")
 
 import sys
+import copy
 import importlib
 import pandas as pd
 from typing import Any, Dict, List
@@ -76,7 +77,6 @@ class XGBoostRegressorStrategy(StrategyBase):
         feature_engine: FeatureEngine,
         target_engine: TargetEngine,
         model: BaseModel,
-        model_params: Dict[str, Any] = {},
         min_train_days: int = 252,
         selector: BaseSelector = None,
         portfolio: BasePortfolio = None,
@@ -87,7 +87,6 @@ class XGBoostRegressorStrategy(StrategyBase):
         self.feature_engine = feature_engine
         self.target_engine = target_engine
         self.model = model
-        self.model_params = model_params
         self.min_train_days = int(min_train_days)
         self.selector = selector
         self.portfolio = portfolio
@@ -171,7 +170,7 @@ class XGBoostRegressorStrategy(StrategyBase):
             y_train = eligible_train[self.target_column]
 
             # Fit fresh model on expanding historical window
-            model = self.model(**self.model_params)
+            model = copy.deepcopy(self.model)
             model.train(X_train, y_train)
 
             # Retrieve eligible tradable symbols on decision date (Stage 1 point-in-time filter)
@@ -242,8 +241,7 @@ class XGBoostRegressorStrategy(StrategyBase):
                 feature_engine_params=_get_params(self.feature_engine),
                 target_engine=type(self.target_engine).__name__,
                 target_engine_params=_get_params(self.target_engine),
-                model=self.model.__name__,
-                model_params=self.model_params,
+                model=type(self.model).__name__,
                 min_train_days=self.min_train_days,
                 selector=type(self.selector).__name__,
                 selector_params=_get_params(self.selector),
@@ -286,7 +284,7 @@ def main() -> int:
     }
     feature_engine = FeatureEngine(features=feature_config)
     target_engine = TargetEngine(
-        target_col="return_30",
+        target_col="fwd_return_30",
         indicator="forward_return",
         params={"horizon": 30},
     )
@@ -294,8 +292,7 @@ def main() -> int:
     strategy_params = {
         "feature_engine": feature_engine,
         "target_engine": target_engine,
-        "model": XGBoostRegressor,
-        "model_params": model_params,
+        "model": XGBoostRegressor(**model_params),
         "min_train_days": 252,
         "selector": PercentileSelector(percentile=0.85),
         "portfolio": EqualWeightPortfolio(),
