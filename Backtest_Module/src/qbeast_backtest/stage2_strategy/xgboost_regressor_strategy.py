@@ -267,6 +267,7 @@ def main() -> int:
     model_params = {
         "n_estimators": 100,
         "max_depth": 3,
+        "tree_method": "hist",
         "learning_rate": 0.05,
         "subsample": 0.8,
         "colsample_bytree": 0.8,
