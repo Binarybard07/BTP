@@ -261,7 +261,7 @@ def main() -> int:
     feature_config = {{ features }}
     feature_engine = FeatureEngine(features=feature_config)
     target_engine = TargetEngine(
-        target_col="return_{{ target_horizon }}",
+        target_col="fwd_return_{{ target_horizon }}",
         indicator="forward_return",
         params={"horizon": {{ target_horizon }}},
     )
