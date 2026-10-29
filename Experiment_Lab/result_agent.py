@@ -6,7 +6,7 @@ Parses Backtest_Module results from summary.json, ranks runs by composite Score,
 generates a single clean 'Metrics' sheet in metrics.xlsx, and archives all run components.
 
 Scoring Formula:
-  Score = 0.5 * CAGR + 0.5 * MaxDD
+  Score = 0.5 * (CAGR - Benchmark_CAGR) + 0.5 * (MaxDD - Benchmark_MaxDD)
 
 Direct execution without flags: `python result_agent.py`
 """
@@ -65,29 +65,18 @@ METRIC_COLUMNS = [
     "Score",
     "CAGR [%]",
     "Max Drawdown [%]",
+    "Avg Drawdown [%]",
     "Sharpe Ratio",
-    "Sortino Ratio",
     "Calmar Ratio",
-    "Volatility (Ann.) [%]",
-    "Win Rate [%]",
-    "# Trades",
-    "Profit Factor",
-    "Expectancy",
-    "Target_Horizon",
-    "Target_Col",
-    "Selector_Percentile",
-    "Max_Deployment_Pct",
-    "Min_Train_Days",
-    "Rebalance_Freq",
-    "Max_Depth",
-    "Learning_Rate",
-    "N_Estimators",
-    "Subsample",
-    "Colsample",
+    "Benchmark",
+    "Benchmark CAGR [%]",
+    "Benchmark MaxDD [%]",
+    "Benchmark AvgDD [%]",
+    "Benchmark Sharpe",
+    "Window_Start",
+    "Window_End",
     "Universe",
-    "Engine",
-    "Start_Date",
-    "End_Date",
+    "Survivorship",
     "Summary_Path",
     "Report_Folder",
 ]
@@ -118,46 +107,27 @@ def extract_run_data(folder_path: Path) -> Optional[Dict[str, Any]]:
 
     cagr = float(summary.get("cagr", 0.0))
     maxdd = float(summary.get("maxdd", 0.0))
-    score = round(0.5 * cagr + 0.5 * maxdd, 4)
-
-    strat_params = summary.get("strategy_params", {})
-    model_params = (
-        strat_params.get("model_params", {})
-        or meta_data.get("model", {}).get("params", {})
-        or meta_data.get("model_params", {})
-    )
-
-    target_cfg = meta_data.get("target", {})
-    strat_cfg = meta_data.get("strategy", {})
+    bench_cagr = float(summary.get("benchmark_cagr", 0.0))
+    bench_maxdd = float(summary.get("benchmark_maxdd", 0.0))
+    score = round(0.5 * (cagr - bench_cagr) + 0.5 * (maxdd - bench_maxdd), 4)
 
     data = {
         "Run_ID": folder_path.name,
         "Score": score,
         "CAGR [%]": round(cagr, 3),
         "Max Drawdown [%]": round(maxdd, 3),
+        "Avg Drawdown [%]": round(float(summary.get("avgdd", 0.0)), 3),
         "Sharpe Ratio": round(float(summary.get("sharpe", 0.0)), 3),
-        "Sortino Ratio": round(float(summary.get("sortino", 0.0)), 3),
         "Calmar Ratio": round(float(summary.get("calmar", 0.0)), 3),
-        "Volatility (Ann.) [%]": round(float(summary.get("volatility", 0.0)), 3),
-        "Win Rate [%]": round(float(summary.get("win_rate", 0.0)), 2),
-        "# Trades": int(summary.get("total_trades", 0)),
-        "Profit Factor": round(float(summary.get("profit_factor", 0.0)), 3),
-        "Expectancy": round(float(summary.get("expectancy", 0.0)), 4),
-        "Target_Horizon": target_cfg.get("horizon", strat_params.get("target_horizon", 30)),
-        "Target_Col": target_cfg.get("target_col", f"return_{strat_params.get('target_horizon', 30)}"),
-        "Selector_Percentile": strat_cfg.get("selector", {}).get("params", {}).get("percentile", strat_params.get("selector_percentile", 0.90)),
-        "Max_Deployment_Pct": strat_cfg.get("risk_manager", {}).get("params", {}).get("max_deployment_pct", strat_params.get("risk_manager_max_deployment_pct", 0.90)),
-        "Min_Train_Days": strat_cfg.get("min_train_days", 1260),
-        "Rebalance_Freq": strat_cfg.get("rebalance_frequency", strat_params.get("rebalance_frequency", "monthly")),
-        "Max_Depth": model_params.get("max_depth", 3),
-        "Learning_Rate": model_params.get("learning_rate", 0.05),
-        "N_Estimators": model_params.get("n_estimators", 100),
-        "Subsample": model_params.get("subsample", 0.8),
-        "Colsample": model_params.get("colsample_bytree", 0.8),
+        "Benchmark": summary.get("benchmark_name", "N/A"),
+        "Benchmark CAGR [%]": round(bench_cagr, 3),
+        "Benchmark MaxDD [%]": round(bench_maxdd, 3),
+        "Benchmark AvgDD [%]": round(float(summary.get("benchmark_avgdd", 0.0)), 3),
+        "Benchmark Sharpe": round(float(summary.get("benchmark_sharpe", 0.0)), 3),
+        "Window_Start": str(summary.get("window_start", meta_data.get("start_date", ""))),
+        "Window_End": str(summary.get("window_end", meta_data.get("end_date", ""))),
         "Universe": summary.get("universe", meta_data.get("universe", "nifty500_ddq")),
-        "Engine": summary.get("engine", meta_data.get("engine", "nautilus")),
-        "Start_Date": summary.get("start_date", meta_data.get("start_date", "2019-01-01")),
-        "End_Date": summary.get("end_date", meta_data.get("end_date", "2027-01-01")),
+        "Survivorship": bool(summary.get("survivorship", False)),
         "Summary_Path": str(summary_path),
         "Report_Folder": str(folder_path),
     }
