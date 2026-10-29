@@ -19,7 +19,7 @@ from pathlib import Path
 import pprint
 import sys
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from jinja2 import Environment, FileSystemLoader
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -107,6 +107,54 @@ def _get_nested(d: Dict[str, Any], path: Tuple[str, ...], default: Any = None) -
     return curr
 
 
+def _expand_component_variations(
+    comp_list: List[Dict[str, Any]],
+    baseline_comp: Optional[Dict[str, Any]] = None,
+    mode: str = "ofat",
+) -> List[Dict[str, Any]]:
+    """
+    Expands a list of component dicts (e.g. model, selector, risk_manager)
+    where 'params' can contain lists of parameter values to vary.
+    """
+    expanded: List[Dict[str, Any]] = []
+    base_params = baseline_comp.get("params", {}) if isinstance(baseline_comp, dict) else {}
+
+    for item in comp_list:
+        if not isinstance(item, dict) or "params" not in item or not isinstance(item["params"], dict):
+            expanded.append(item)
+            continue
+
+        param_dict = item["params"]
+        has_lists = any(isinstance(v, list) for v in param_dict.values())
+        if not has_lists:
+            expanded.append(item)
+            continue
+
+        pkg = item.get("pkg")
+        cls_name = item.get("cls")
+
+        effective_base = copy.deepcopy(base_params) if (baseline_comp and baseline_comp.get("cls") == cls_name) else {}
+        for k, v in param_dict.items():
+            if k not in effective_base:
+                effective_base[k] = v[0] if isinstance(v, list) and v else v
+
+        if mode == "ofat":
+            for p_name, p_vals in param_dict.items():
+                if isinstance(p_vals, list):
+                    for val in p_vals:
+                        new_p = copy.deepcopy(effective_base)
+                        new_p[p_name] = val
+                        expanded.append({"pkg": pkg, "cls": cls_name, "params": new_p})
+        else:  # grid
+            keys = list(param_dict.keys())
+            val_lists = [v if isinstance(v, list) else [v] for v in param_dict.values()]
+            for combo in itertools.product(*val_lists):
+                new_p = dict(zip(keys, combo))
+                expanded.append({"pkg": pkg, "cls": cls_name, "params": new_p})
+
+    return expanded
+
+
 def generate_combinations_from_config(cfg: Dict[str, Any], main_filename: str) -> List[Dict[str, Any]]:
     """Generate combinations based on mode ('ofat', 'grid', or 'explicit') without hardcoded fallbacks."""
     mode = str(cfg.get("mode", "ofat")).lower().strip()
@@ -114,6 +162,18 @@ def generate_combinations_from_config(cfg: Dict[str, Any], main_filename: str) -
     baseline = copy.deepcopy(cfg.get("baseline", {}))
     variations = copy.deepcopy(cfg.get("variations", {}))
     explicit_combos = cfg.get("explicit_combinations", [])
+
+    # Dynamically expand any modular component list containing parameter variation grids
+    for comp_key, comp_val in variations.items():
+        if isinstance(comp_val, list) and any(
+            isinstance(item, dict) and "params" in item and isinstance(item["params"], dict)
+            for item in comp_val
+        ):
+            variations[comp_key] = _expand_component_variations(
+                comp_val,
+                baseline.get(comp_key),
+                mode=mode,
+            )
 
     results: List[Dict[str, Any]] = []
 

@@ -157,16 +157,17 @@ variations:
   # ----------------------------------------------------------------------------
   # F. MODEL METHODS (Plug-and-play with pkg, cls, params)
   # ----------------------------------------------------------------------------
-
   model:
-    params:
-      n_estimators: [50, 100, 200, 300]
-      max_depth: [2, 3, 4, 6]
-      learning_rate: [0.01, 0.03, 0.05, 0.10]
-      subsample: [0.60, 0.80, 1.00]
-      colsample_bytree: [0.60, 0.80, 1.00]
-      reg_alpha: [0.0, 0.1, 1.0]          # L1 regularization (Lasso sparsity)
-      reg_lambda: [0.5, 1.0, 5.0]         # L2 regularization (Ridge shrinkage)
+    - pkg: "equity_strategy.models.xgboost_regressor"
+      cls: "XGBoostRegressor"
+      params:
+        n_estimators: [50, 100, 200, 300]
+        max_depth: [2, 3, 4, 6]
+        learning_rate: [0.01, 0.03, 0.05, 0.10]
+        subsample: [0.60, 0.80, 1.00]
+        colsample_bytree: [0.60, 0.80, 1.00]
+        reg_alpha: [0.0, 0.1, 1.0]          # L1 regularization (Lasso sparsity)
+        reg_lambda: [0.5, 1.0, 5.0]         # L2 regularization (Ridge shrinkage)
 
   # ----------------------------------------------------------------------------
   # G. SELECTOR METHODS (Plug-and-play with pkg, cls, params)
@@ -175,50 +176,21 @@ variations:
     # 1. PercentileSelector (Cross-sectional percentile ranking)
     - pkg: "equity_strategy.selection.percentile"
       cls: "PercentileSelector"
-      params: {percentile: 0.75}
-    - pkg: "equity_strategy.selection.percentile"
-      cls: "PercentileSelector"
-      params: {percentile: 0.80}
-    - pkg: "equity_strategy.selection.percentile"
-      cls: "PercentileSelector"
-      params: {percentile: 0.85}
-    - pkg: "equity_strategy.selection.percentile"
-      cls: "PercentileSelector"
-      params: {percentile: 0.90}
-    - pkg: "equity_strategy.selection.percentile"
-      cls: "PercentileSelector"
-      params: {percentile: 0.95}
+      params:
+        percentile: [0.75, 0.80, 0.85, 0.90, 0.95]
 
     # 2. TopNSelector (Fixed constituent count)
     - pkg: "equity_strategy.selection.top_n"
       cls: "TopNSelector"
-      params: {n: 5}
-    - pkg: "equity_strategy.selection.top_n"
-      cls: "TopNSelector"
-      params: {n: 10}
-    - pkg: "equity_strategy.selection.top_n"
-      cls: "TopNSelector"
-      params: {n: 15}
-    - pkg: "equity_strategy.selection.top_n"
-      cls: "TopNSelector"
-      params: {n: 20}
-    - pkg: "equity_strategy.selection.top_n"
-      cls: "TopNSelector"
-      params: {n: 30}
+      params:
+        n: [5, 10, 15, 20, 30]
 
     # 3. ThresholdSelector (Absolute predicted return hurdle)
     - pkg: "equity_strategy.selection.threshold"
       cls: "ThresholdSelector"
-      params: {threshold: 0.00, inclusive: false}
-    - pkg: "equity_strategy.selection.threshold"
-      cls: "ThresholdSelector"
-      params: {threshold: 0.01, inclusive: false}
-    - pkg: "equity_strategy.selection.threshold"
-      cls: "ThresholdSelector"
-      params: {threshold: 0.02, inclusive: false}
-    - pkg: "equity_strategy.selection.threshold"
-      cls: "ThresholdSelector"
-      params: {threshold: 0.05, inclusive: false}
+      params:
+        threshold: [0.00, 0.01, 0.02, 0.05]
+        inclusive: false
 
   # ----------------------------------------------------------------------------
   # G. PORTFOLIO METHODS (Plug-and-play with pkg, cls, params)
@@ -234,19 +206,8 @@ variations:
   risk_manager:
     - pkg: "equity_strategy.risk_management.fixed_percentage"
       cls: "FixedPercentageRiskManager"
-      params: {max_deployment_pct: 0.60}
-    - pkg: "equity_strategy.risk_management.fixed_percentage"
-      cls: "FixedPercentageRiskManager"
-      params: {max_deployment_pct: 0.75}
-    - pkg: "equity_strategy.risk_management.fixed_percentage"
-      cls: "FixedPercentageRiskManager"
-      params: {max_deployment_pct: 0.85}
-    - pkg: "equity_strategy.risk_management.fixed_percentage"
-      cls: "FixedPercentageRiskManager"
-      params: {max_deployment_pct: 0.90}
-    - pkg: "equity_strategy.risk_management.fixed_percentage"
-      cls: "FixedPercentageRiskManager"
-      params: {max_deployment_pct: 0.97}
+      params:
+        max_deployment_pct: [0.60, 0.75, 0.85, 0.90, 0.97]
 
   # ----------------------------------------------------------------------------
   # I. FEATURE ENGINEERING VARIATIONS (Plug-and-play with indicator, params)
@@ -401,6 +362,8 @@ explicit_combinations:
       cls: "FixedPercentageRiskManager"
       params: {max_deployment_pct: 0.75}
     model:
+      pkg: "equity_strategy.models.xgboost_regressor"
+      cls: "XGBoostRegressor"
       params:
         n_estimators: 100
         max_depth: 3
@@ -424,6 +387,8 @@ explicit_combinations:
       cls: "FixedPercentageRiskManager"
       params: {max_deployment_pct: 0.90}
     model:
+      pkg: "equity_strategy.models.xgboost_regressor"
+      cls: "XGBoostRegressor"
       params:
         n_estimators: 200
         max_depth: 4
@@ -447,6 +412,8 @@ explicit_combinations:
       cls: "FixedPercentageRiskManager"
       params: {max_deployment_pct: 0.85}
     model:
+      pkg: "equity_strategy.models.xgboost_regressor"
+      cls: "XGBoostRegressor"
       params:
         n_estimators: 150
         max_depth: 3
@@ -470,6 +437,8 @@ explicit_combinations:
       cls: "FixedPercentageRiskManager"
       params: {max_deployment_pct: 0.85}
     model:
+      pkg: "equity_strategy.models.xgboost_regressor"
+      cls: "XGBoostRegressor"
       params:
         n_estimators: 100
         max_depth: 3
