@@ -32,13 +32,15 @@ from equity_strategy.data.training_dataset import TrainingDatasetBuilder
 from equity_strategy.features.engine import FeatureEngine
 from equity_strategy.targets.engine import TargetEngine
 from equity_strategy.models.base import BaseModel
-from equity_strategy.models.xgboost_regressor import XGBoostRegressor
 from equity_strategy.portfolio.base import BasePortfolio
-from equity_strategy.portfolio.equal_weight import EqualWeightPortfolio
 from equity_strategy.selection.base import BaseSelector
-from equity_strategy.selection.percentile import PercentileSelector
 from equity_strategy.risk_management.base import BaseRiskManager
-from equity_strategy.risk_management.fixed_percentage import FixedPercentageRiskManager
+
+# Dynamic modular components (pkg & cls from config, RMTMTF-style)
+from {{ model.pkg }} import {{ model.cls }}
+from {{ selector.pkg }} import {{ selector.cls }}
+from {{ portfolio.pkg }} import {{ portfolio.cls }}
+from {{ risk_manager.pkg }} import {{ risk_manager.cls }}
 
 
 def _get_params(obj: Any) -> Dict[str, Any]:
@@ -267,12 +269,12 @@ def main() -> int:
     strategy_params = {
         "feature_engine": feature_engine,
         "target_engine": target_engine,
-        "model": XGBoostRegressor,
+        "model": {{ model.cls }},
         "model_params": model_params,
         "min_train_days": {{ min_train_days }},
-        "selector": PercentileSelector(percentile={{ selector_percentile }}),
-        "portfolio": EqualWeightPortfolio(),
-        "risk_manager": FixedPercentageRiskManager(max_deployment_pct={{ max_deployment_pct }}),
+        "selector": {{ selector.cls }}(**{{ selector.params | default({}) }}),
+        "portfolio": {{ portfolio.cls }}(**{{ portfolio.params | default({}) }}),
+        "risk_manager": {{ risk_manager.cls }}(**{{ risk_manager.params | default({}) }}),
         "rebalance_frequency": "{{ rebalance_frequency }}",
     }
 

@@ -1,26 +1,31 @@
 # ==============================================================================
-# Experiment Lab Configuration
+# Experiment Lab Configuration (Modular & Strategy-Agnostic)
 # ==============================================================================
-# Mirrors RM_TM_TF_Combo design for Backtest_Module strategy experimentation.
-# All parameters in baseline & variations are substituted directly into the strategy template.
-# ==============================================================================
-
-experiment_name: "xgboost_experiments"
-engine: "nautilus"
-
-# Combination Generation Mode:
-#   - "ofat": One-factor-at-a-time comparisons around the baseline
+# Follows the RM_TM_TF_Combo architecture:
+# Every module (model, selector, portfolio, risk_manager) is specified with:
+#   pkg: <import_package_path>
+#   cls: <class_name>
+#   params: <dictionary_of_constructor_kwargs>
+#
+# Any future method or module added to the codebase can be plugged into this
+# config without changing a single line in the strategy template.
+#
+# Combination Generation Modes:
+#   - "ofat": One-factor-at-a-time comparisons around baseline (recommended)
 #   - "grid": Full Cartesian-product grid search across all variations
 #   - "explicit": Run only explicit combinations listed under 'explicit_combinations'
+# ==============================================================================
+
+experiment_name: "modular_grid_experiments"
+engine: "nautilus"
 mode: "ofat"
 
-# Concurrency & Execution Control
 execution:
   max_workers: 2            # Parallel backtest runner limit
   timeout_seconds: 1800     # Maximum execution time per backtest (seconds)
 
 # ------------------------------------------------------------------------------
-# Baseline Configuration (Default reference parameters)
+# Baseline Configuration (Default Reference Model)
 # ------------------------------------------------------------------------------
 baseline:
   universe: "nifty500_ddq"
@@ -28,19 +33,44 @@ baseline:
   end_date: "2027-01-01"
   rebalance_frequency: "monthly"
   min_train_days: 1260
-  selector_percentile: 0.90
-  max_deployment_pct: 0.90
-  target_horizon: 30
+  target_horizon: 21
 
+  # Model Specification (pkg & cls)
+  model:
+    pkg: "equity_strategy.models.xgboost_regressor"
+    cls: "XGBoostRegressor"
   model_params:
     n_estimators: 100
     max_depth: 3
     learning_rate: 0.05
     subsample: 0.8
     colsample_bytree: 0.8
+    reg_alpha: 0.1
+    reg_lambda: 1.0
     random_state: 42
     n_jobs: -1
 
+  # Selector Specification (pkg, cls, params)
+  selector:
+    pkg: "equity_strategy.selection.percentile"
+    cls: "PercentileSelector"
+    params:
+      percentile: 0.85
+
+  # Portfolio Specification (pkg, cls, params)
+  portfolio:
+    pkg: "equity_strategy.portfolio.equal_weight"
+    cls: "EqualWeightPortfolio"
+    params: {}
+
+  # Risk Manager Specification (pkg, cls, params)
+  risk_manager:
+    pkg: "equity_strategy.risk_management.fixed_percentage"
+    cls: "FixedPercentageRiskManager"
+    params:
+      max_deployment_pct: 0.90
+
+  # Baseline Feature Set
   features:
     return_21:
       indicator: "returns"
@@ -63,25 +93,133 @@ baseline:
 
 # ------------------------------------------------------------------------------
 # Variations (Parameters to vary in Grid / OFAT search)
-# Any parameter with multiple values generates combinations; single values remain fixed.
 # ------------------------------------------------------------------------------
 variations:
-  # Universe & Timeframe Parameters
-  universe: ["nifty500_ddq", "nifty50_ddq"]
-  start_date: ["2019-01-01"]
-  end_date: ["2027-01-01"]
-  rebalance_frequency: ["monthly"]
+  # 1. All 16 Available Universes (8 Standard + 8 DDQ Survivorship-Free)
+  universe:
+    - "nifty50"
+    - "nifty100"
+    - "nifty200"
+    - "nifty500"
+    - "midcap50"
+    - "midcap100"
+    - "midcap150"
+    - "smallcap250"
+    - "nifty50_ddq"
+    - "nifty100_ddq"
+    - "nifty200_ddq"
+    - "nifty500_ddq"
+    - "midcap50_ddq"
+    - "midcap100_ddq"
+    - "midcap150_ddq"
+    - "smallcap250_ddq"
 
-  # Strategy & Target Parameters
-  target_horizon: [10, 20, 30, 60]
-  selector_percentile: [0.85, 0.90]
-  max_deployment_pct: [0.75, 0.90]
+  # 2. Start & End Dates
+  start_date:
+    - "2019-01-01"
+    - "2021-01-01"
+    - "2024-01-01"
 
-  # XGBoost Model Hyperparameters
+  end_date:
+    - "2024-01-01"
+    - "2026-05-29"
+    - "2027-01-01"
+
+  # 3. Supported Rebalance Frequencies (loader.py)
+  rebalance_frequency:
+    - "weekly"
+    - "monthly"
+    - "quarterly"
+
+  # 4. Minimum Training Warmup Days
+  min_train_days:
+    - 252
+    - 504
+    - 756
+    - 1260
+
+  # 5. Target Forward Return Horizons (in trading days)
+  target_horizon:
+    - 5
+    - 10
+    - 21
+    - 30
+    - 63
+
+  # 6. Selector Method Variations (pkg + cls + params)
+  selector:
+    # PercentileSelector variations (cross-sectional percentile cutoff)
+    - pkg: "equity_strategy.selection.percentile"
+      cls: "PercentileSelector"
+      params: {percentile: 0.75}
+    - pkg: "equity_strategy.selection.percentile"
+      cls: "PercentileSelector"
+      params: {percentile: 0.85}
+    - pkg: "equity_strategy.selection.percentile"
+      cls: "PercentileSelector"
+      params: {percentile: 0.90}
+    - pkg: "equity_strategy.selection.percentile"
+      cls: "PercentileSelector"
+      params: {percentile: 0.95}
+
+    # TopNSelector variations (fixed top-N basket size)
+    - pkg: "equity_strategy.selection.top_n"
+      cls: "TopNSelector"
+      params: {n: 5}
+    - pkg: "equity_strategy.selection.top_n"
+      cls: "TopNSelector"
+      params: {n: 10}
+    - pkg: "equity_strategy.selection.top_n"
+      cls: "TopNSelector"
+      params: {n: 20}
+    - pkg: "equity_strategy.selection.top_n"
+      cls: "TopNSelector"
+      params: {n: 30}
+
+    # ThresholdSelector variations (absolute return hurdle rate)
+    - pkg: "equity_strategy.selection.threshold"
+      cls: "ThresholdSelector"
+      params: {threshold: 0.00, inclusive: false}
+    - pkg: "equity_strategy.selection.threshold"
+      cls: "ThresholdSelector"
+      params: {threshold: 0.02, inclusive: false}
+    - pkg: "equity_strategy.selection.threshold"
+      cls: "ThresholdSelector"
+      params: {threshold: 0.05, inclusive: false}
+
+  # 7. Portfolio Constructor Variations
+  portfolio:
+    - pkg: "equity_strategy.portfolio.equal_weight"
+      cls: "EqualWeightPortfolio"
+      params: {}
+
+  # 8. Risk Management Variations (Capital deployment ceiling <= 0.97)
+  risk_manager:
+    - pkg: "equity_strategy.risk_management.fixed_percentage"
+      cls: "FixedPercentageRiskManager"
+      params: {max_deployment_pct: 0.60}
+    - pkg: "equity_strategy.risk_management.fixed_percentage"
+      cls: "FixedPercentageRiskManager"
+      params: {max_deployment_pct: 0.75}
+    - pkg: "equity_strategy.risk_management.fixed_percentage"
+      cls: "FixedPercentageRiskManager"
+      params: {max_deployment_pct: 0.85}
+    - pkg: "equity_strategy.risk_management.fixed_percentage"
+      cls: "FixedPercentageRiskManager"
+      params: {max_deployment_pct: 0.90}
+    - pkg: "equity_strategy.risk_management.fixed_percentage"
+      cls: "FixedPercentageRiskManager"
+      params: {max_deployment_pct: 0.97}
+
+  # 9. Model Hyperparameters
   model_params:
-    max_depth: [2, 3, 4]
-    learning_rate: [0.03, 0.05]
-    n_estimators: [100, 200]
+    n_estimators: [50, 100, 200, 300]
+    max_depth: [2, 3, 4, 6]
+    learning_rate: [0.01, 0.03, 0.05, 0.10]
+    subsample: [0.60, 0.80, 1.00]
+    colsample_bytree: [0.60, 0.80, 1.00]
+    reg_alpha: [0.0, 0.1, 1.0]
+    reg_lambda: [0.5, 1.0, 5.0]
 
 # ------------------------------------------------------------------------------
 # Explicit Combinations (Used when mode == "explicit")
