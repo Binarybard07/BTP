@@ -253,6 +253,135 @@ variations:
   # ----------------------------------------------------------------------------
   # I. FEATURE ENGINEERING VARIATIONS (Plug-and-play with indicator, params)
   # ----------------------------------------------------------------------------
+  features:
+    # 1. Multi-Horizon Pure Momentum (Short to Long Lookbacks)
+    - return_5:
+        indicator: "returns"
+        params: {period: 5}
+      return_10:
+        indicator: "returns"
+        params: {period: 10}
+      return_21:
+        indicator: "returns"
+        params: {period: 21}
+      return_63:
+        indicator: "returns"
+        params: {period: 63}
+      return_126:
+        indicator: "returns"
+        params: {period: 126}
+      return_252:
+        indicator: "returns"
+        params: {period: 252}
+
+    # 2. Moving Average Extension & Distance-from-Trend (Mean Reversion)
+    - close_to_sma20:
+        indicator: "close_to_sma"
+        params: {period: 20}
+      close_to_sma50:
+        indicator: "close_to_sma"
+        params: {period: 50}
+      close_to_sma100:
+        indicator: "close_to_sma"
+        params: {period: 100}
+      close_to_sma200:
+        indicator: "close_to_sma"
+        params: {period: 200}
+      close_to_ema20:
+        indicator: "close_to_ema"
+        params: {period: 20}
+      close_to_ema50:
+        indicator: "close_to_ema"
+        params: {period: 50}
+
+    # 3. Volatility-Normalized & Risk Dynamics (Risk-Adjusted Momentum)
+    - return_10:
+        indicator: "returns"
+        params: {period: 10}
+      return_21:
+        indicator: "returns"
+        params: {period: 21}
+      return_63:
+        indicator: "returns"
+        params: {period: 63}
+      volatility_10:
+        indicator: "rolling_std"
+        params: {period: 10}
+      volatility_21:
+        indicator: "rolling_std"
+        params: {period: 21}
+      volatility_63:
+        indicator: "rolling_std"
+        params: {period: 63}
+
+    # 4. Comprehensive Multi-Factor Matrix (Momentum + ROC + Trend + Volatility)
+    - return_21:
+        indicator: "returns"
+        params: {period: 21}
+      return_63:
+        indicator: "returns"
+        params: {period: 63}
+      return_252:
+        indicator: "returns"
+        params: {period: 252}
+      roc_21:
+        indicator: "roc"
+        params: {period: 21}
+      close_to_sma50:
+        indicator: "close_to_sma"
+        params: {period: 50}
+      close_to_sma200:
+        indicator: "close_to_sma"
+        params: {period: 200}
+      close_to_ema50:
+        indicator: "close_to_ema"
+        params: {period: 50}
+      volatility_21:
+        indicator: "rolling_std"
+        params: {period: 21}
+      volatility_63:
+        indicator: "rolling_std"
+        params: {period: 63}
+
+    # 5. Short-Term Tactical / Swing Horizon (Weekly Rebalance & 5-10d Targets)
+    - return_5:
+        indicator: "returns"
+        params: {period: 5}
+      return_10:
+        indicator: "returns"
+        params: {period: 10}
+      roc_10:
+        indicator: "roc"
+        params: {period: 10}
+      close_to_ema10:
+        indicator: "close_to_ema"
+        params: {period: 10}
+      close_to_sma20:
+        indicator: "close_to_sma"
+        params: {period: 20}
+      volatility_10:
+        indicator: "rolling_std"
+        params: {period: 10}
+
+    # 6. Long-Term Macro / Slow Trend Horizon (Quarterly Rebalance & 63d Targets)
+    - return_63:
+        indicator: "returns"
+        params: {period: 63}
+      return_126:
+        indicator: "returns"
+        params: {period: 126}
+      return_252:
+        indicator: "returns"
+        params: {period: 252}
+      close_to_sma100:
+        indicator: "close_to_sma"
+        params: {period: 100}
+      close_to_sma200:
+        indicator: "close_to_sma"
+        params: {period: 200}
+      volatility_63:
+        indicator: "rolling_std"
+        params: {period: 63}
   
 
 
