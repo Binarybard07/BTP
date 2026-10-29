@@ -155,20 +155,23 @@ variations:
     - 63                    # 1-Quarter Forward Return (~63 trading days)
 
   # ----------------------------------------------------------------------------
-  # F. MODEL METHODS (Plug-and-play with pkg, cls, params)
+  # F. MODEL METHODS (Plug-and-play with pkg, cls)
   # ----------------------------------------------------------------------------
-
   model:
     - pkg: "equity_strategy.models.xgboost_regressor"
       cls: "XGBoostRegressor"
-      params:
-        n_estimators: [50, 100, 200, 300]
-        max_depth: [2, 3, 4, 6]
-        learning_rate: [0.01, 0.03, 0.05, 0.10]
-        subsample: [0.60, 0.80, 1.00]
-        colsample_bytree: [0.60, 0.80, 1.00]
-        reg_alpha: [0.0, 0.1, 1.0]          # L1 regularization (Lasso sparsity)
-        reg_lambda: [0.5, 1.0, 5.0]         # L2 regularization (Ridge shrinkage)
+
+  # ----------------------------------------------------------------------------
+  # G. MODEL HYPERPARAMETERS (Varying parameters of baseline model)
+  # ----------------------------------------------------------------------------
+  model_params:
+    n_estimators: [50, 100, 200, 300]
+    max_depth: [2, 3, 4, 6]
+    learning_rate: [0.01, 0.03, 0.05, 0.10]
+    subsample: [0.60, 0.80, 1.00]
+    colsample_bytree: [0.60, 0.80, 1.00]
+    reg_alpha: [0.0, 0.1, 1.0]          # L1 regularization (Lasso sparsity)
+    reg_lambda: [0.5, 1.0, 5.0]         # L2 regularization (Ridge shrinkage)
 
   # ----------------------------------------------------------------------------
   # G. SELECTOR METHODS (Plug-and-play with pkg, cls, params)
