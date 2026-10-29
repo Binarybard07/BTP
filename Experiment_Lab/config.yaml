@@ -19,7 +19,7 @@ mode: "ofat"                 # Options: "grid", "ofat", "explicit"
 
 execution:
   max_workers: 4            # Parallel backtest execution count
-  timeout_seconds: 1800     # 30-minute timeout per backtest
+  timeout_seconds: 3600     # 60-minute timeout per backtest
 
 # ------------------------------------------------------------------------------
 # 1. Baseline Configuration (Sensible Reference Model)
