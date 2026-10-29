@@ -30,7 +30,10 @@ class TargetEngine:
         if not params or not isinstance(params, dict):
             raise ValueError("TargetEngine requires a non-empty params dictionary.")
 
-        self.target_col = str(target_col)
+        col = str(target_col).strip()
+        if not col.startswith("target_"):
+            col = f"target_{col}"
+        self.target_col = col
         self.indicator = str(indicator)
         self.params = dict(params)
         self.horizon: int = int(self.params["horizon"])
