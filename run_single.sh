@@ -3,8 +3,8 @@
 #SBATCH --partition=fat         # 'small', 'medium', or 'test'
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4         # 4 CPU cores
-#SBATCH --mem=16gb                 # 16 GB memory limit
+#SBATCH --cpus-per-task=8         # 8 CPU cores
+#SBATCH --mem=24gb                 # 24 GB memory limit
 #SBATCH --time=06:00:00           # 6 hour maximum
 #SBATCH --output=single_%j.log    # Slurm log file
 

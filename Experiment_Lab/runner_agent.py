@@ -174,6 +174,7 @@ def run_and_archive(script_path: Path) -> bool:
         summary_file = find_summary_file(run_id)
 
         # 4. Check run outcome
+        exp_report_dir = PROJECT_ROOT / "Backtest_Module" / "reports" / "experiments" / run_id
         if return_code == 0 and summary_file and summary_file.exists():
             logger.info(f"Completed {run_id} successfully (exit code 0).")
 
@@ -182,6 +183,11 @@ def run_and_archive(script_path: Path) -> bool:
             shutil.copy2(script_path, staging_folder / script_name)
             if meta_path.exists():
                 shutil.copy2(meta_path, staging_folder / meta_path.name)
+
+            # Clean up intermediate Backtest_Module reports folder to avoid duplication
+            if exp_report_dir.exists():
+                shutil.rmtree(exp_report_dir, ignore_errors=True)
+                logger.info(f"Cleaned up redundant report folder -> {exp_report_dir}")
 
             # Move script to processed
             dest_script = SCRIPTS_PROCESSED / script_name
@@ -201,6 +207,8 @@ def run_and_archive(script_path: Path) -> bool:
             logger.warning(f"Failed {run_id} (exit code {return_code}, summary found: {bool(summary_file)}).")
             if staging_folder.exists():
                 shutil.rmtree(staging_folder, ignore_errors=True)
+            if exp_report_dir.exists():
+                shutil.rmtree(exp_report_dir, ignore_errors=True)
 
             error_dest = SCRIPTS_ERRONOUS / script_name
             if script_path.exists():
@@ -217,6 +225,9 @@ def run_and_archive(script_path: Path) -> bool:
 
         if staging_folder.exists():
             shutil.rmtree(staging_folder, ignore_errors=True)
+        exp_report_dir = PROJECT_ROOT / "Backtest_Module" / "reports" / "experiments" / run_id
+        if exp_report_dir.exists():
+            shutil.rmtree(exp_report_dir, ignore_errors=True)
 
         error_dest = SCRIPTS_ERRONOUS / script_name
         if script_path.exists():

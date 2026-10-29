@@ -271,7 +271,7 @@ def main() -> int:
         "subsample": 0.8,
         "colsample_bytree": 0.8,
         "random_state": 42,
-        "n_jobs": -1,
+        "n_jobs": 2,
     }
 
     feature_config = {

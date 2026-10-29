@@ -57,7 +57,7 @@ PRESETS: dict[str, dict] = {
     ),
     "midcap150": dict(
         label="NIFTY MidCap 150",
-        source=DATA_ROOT / "NIFTYMidcap150",
+        source=DATA_ROOT / "NIFTYMidCap150",
         index_symbol="NIFTYMIDCAP150",
         membership=None,
     ),
@@ -107,7 +107,7 @@ PRESETS: dict[str, dict] = {
     ),
     "midcap150_ddq": dict(
         label="NIFTY MidCap 150 (point-in-time membership)",
-        source=DATA_ROOT / "NIFTYMidcap150",
+        source=DATA_ROOT / "NIFTYMidCap150",
         index_symbol="NIFTYMIDCAP150",
         membership=MEMBERSHIP_ROOT / "Midcap150_membership.csv",
     ),
