@@ -42,21 +42,62 @@ The experiment registry tracks empirical strategy runs, parameter sweeps, and ex
 - **Reporting**: Native Nautilus exports (`orders.csv`, `positions.csv`, `account.csv`, `stats.csv`, `returns_series.csv`) and HTML tearsheet via `NautilusExporter`
 - **Summary**: Successfully executed full event-driven multi-instrument backtesting in NautilusTrader with realistic Indian equity market friction, live equity-based position sizing, capital-deployment budgeting, and native performance reporting.
 
+### EXP-004: Tradability Gate (Staircase v2.4.1) & Trade Management Verification
+- **Status**: Completed
+- **Date**: 2026-10-22
+- **Objective**: Integrate and verify the Staircase v2.4.1 tradability gate to filter out illiquid, staircase-pattern, and circuit-frozen stocks on NSE cash equities.
+- **Summary**: Verified that `TradabilityGate` dynamically purges untradable stocks from the eligible set before model scoring, eliminating unexecutable trade orders and false paper profits from illiquid stocks.
+
+### EXP-005: Statutory Indian Capital Gains Tax (STCG/LTCG) Integration
+- **Status**: Completed
+- **Date**: 2026-10-24
+- **Objective**: Incorporate realistic statutory Indian capital gains tax treatment across financial years (April 1 to March 31).
+- **Summary**: Integrated STCG (20%) and LTCG (12.5%) accounting into post-backtest equity calculations, producing realistic post-tax NAV curves in `equity.csv` and recording net tax liability in `summary.json`.
+
+### EXP-006: Point-in-Time Membership & Survivorship Bias Elimination across 8 Universes
+- **Status**: Completed
+- **Date**: 2026-10-26
+- **Objective**: Ingest historical constituent changes for NIFTY indices over 2016–2026 to eliminate survivorship bias.
+- **Summary**: Configured and validated 8 survivorship-free DDQ universes (`nifty50_ddq`, `nifty100_ddq`, `nifty200_ddq`, `nifty500_ddq`, `midcap150_ddq`, `smallcap250_ddq`, `microcap250_ddq`, `totalmarket_ddq`). Backtests verified zero lookahead in universe inclusion.
+
+### EXP-007: Dual-Engine Verification & Metric Standardization
+- **Status**: Completed
+- **Date**: 2026-10-28
+- **Objective**: Verify that the fast internal ledger matches event-driven NautilusTrader 2.0.0rc5 execution and standardize output metrics.
+- **Summary**: Acceptance test verified Rs 0.0000 maximum difference between both engines. Standardized `summary.json` to 18 verified metrics (CAGR, MaxDD, AvgDD, Sharpe, Calmar, benchmark metrics, charges, slippage, tax, fills).
+
+### EXP-008: Interactive Performance Tearsheet Integration
+- **Status**: Completed
+- **Date**: 2026-10-28
+- **Objective**: Generate standalone interactive HTML performance tearsheet and charts.
+- **Summary**: Fully integrated `dashboard.html` generation, displaying cumulative return curves, benchmark comparisons, drawdown depth, rolling Sharpe, and monthly return heatmaps.
+
+### EXP-009: Experiment Lab Autonomous Multi-Agent Suite & HPC Cluster Execution
+- **Status**: Completed
+- **Date**: 2026-10-30
+- **Objective**: Build autonomous multi-agent experimentation framework (`generator_agent`, `runner_agent`, `result_agent`, `google_sheets`) and verify Slurm cluster execution.
+- **Summary**:
+  - Implemented parallel execution with automatic intermediate report directory cleanup (`Backtest_Module/reports/experiments/<run_id>`) preventing disk exhaustion.
+  - Implemented benchmark-relative composite score: $\text{Score} = 0.5 \times (\text{CAGR} - \text{Benchmark\_CAGR}) + 0.5 \times (\text{MaxDD} - \text{Benchmark\_MaxDD})$.
+  - Verified containerized execution (`container.sif` + `.venv/bin/python`) on `/scratch/data/p23et0001/jenish/BTP` with optimized XGBoost histogram tree method (`tree_method: "hist"`, `n_jobs: 2`).
+  - Real-time Google Sheets synchronization with formatted headers and green conditional highlighting for outperforming runs.
+
 ---
 
-## Upcoming Experiments
+## Active Research Experiments (Strategy Improvisation for Indian Markets)
 
-- **EXP-004 (Roadmap Step 2: Trade Management)**: Trade Management Module Integration & Evaluation
-  - **Objective**: Inspect existing trade/order execution and rebalancing capabilities in `Rebalancer` and `XGBoostRegressorStrategy`, evaluate trade lifecycle tracking, and test trade management extensions without modifying verified execution behavior.
+### EXP-010: High-Throughput Grid Sweep (1,080 Combinations across 8 DDQ Universes)
+- **Status**: Ready to Launch
+- **Objective**: Run the comprehensive 1,080-combination grid sweep configured in `Experiment_Lab/config.yaml` across 8 DDQ universes, 3 rebalance frequencies (weekly, monthly, quarterly), 3 target horizons (10d, 21d, 63d), 5 selectors (percentile 80/85/90, top-n 15/20), and 3 risk ceilings (0.75, 0.85, 0.95).
+- **Hypothesis**: Mid-cap and small-cap DDQ universes (`midcap150_ddq`, `smallcap250_ddq`) with monthly rebalancing and 21-day targets will yield the highest benchmark-relative alpha, while weekly rebalancing will suffer excessive STT fee drag.
 
-- **EXP-005 (Roadmap Step 3: Tax Implementation)**: Statutory Tax Drag & Net Return Impact
-  - **Objective**: Incorporate statutory Indian capital gains tax treatment (STCG and LTCG accounting across financial years) into post-backtest equity curves and analyze post-tax performance impact.
+### EXP-011: Alternative Tree Learners (LightGBM vs XGBoost Hist vs CatBoost)
+- **Status**: Planned
+- **Objective**: Benchmark LightGBM and CatBoost against XGBoost Hist on identical 16-feature matrices and walk-forward splits.
+- **Hypothesis**: LightGBM will achieve comparable alpha with 30-40% faster training times, enabling faster walk-forward retraining across large equity universes.
 
-- **EXP-006 (Roadmap Step 4: Survivorship-Bias Handling)**: Dynamic Universe Membership & Survivorship Bias Quantification
-  - **Objective**: Ingest historical constituent lists for NIFTY indices over time to eliminate survivorship bias from point-in-time universe selection and benchmark results against survivorship-biased baselines.
+### EXP-012: Advanced Indian Market Alpha Signals (Volume Dynamics & Proximity to Highs)
+- **Status**: Planned
+- **Objective**: Formulate and test new NSE-specific features: delivery volume surge, proximity to 52-week high, and cross-sectional z-score transformed momentum.
+- **Hypothesis**: Volume-confirmed momentum will filter out false breakouts in Indian mid-caps, improving Calmar ratio and reducing maximum drawdown.
 
-- **EXP-007 (Roadmap Step 5: OpenStatz Tearsheet)**: OpenStatz Performance Analytics Reconciliation
-  - **Objective**: Generate OpenStatz performance tearsheets and systematically reconcile return, risk, factor, and drawdown metrics against native NautilusTrader `tearsheet.html` outputs to identify and explain discrepancies.
-
-- **EXP-008 (Roadmap Step 6: Dashboard)**: Interactive Dashboard Verification & Reporting Ingestion
-  - **Objective**: Connect the interactive web dashboard to strategy output directories, verifying accurate display of equity curves, trade logs, risk metrics, and holding distributions.

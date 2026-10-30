@@ -257,3 +257,61 @@
   - Drastic reduction in strategy code complexity while preserving comprehensive native performance analytics.
 - **INTERPRETATION**:
   - Clear separation between strategy execution and performance analytics.
+
+## Entry 016: 3-Stage Modular Backtest Architecture, Tradability Gate, Survivorship Control & Statutory Tax
+- **Date**: 2026-10-25
+- **Author**: Antigravity
+- **Files Created/Modified**:
+  - `Backtest_Module/src/qbeast_backtest/` (`stage1_data`, `stage2_strategy`, `stage3_execution`, `pipeline.py`)
+  - `Backtest_Module/src/qbeast_exec/` (`tradability.py`, `fees.py`, `slippage.py`, `tax.py`, `staircase.py`, `nautilus_harness.py`)
+- **DECISION**:
+  - Re-layer backtesting into 3 decoupled stages (`stage1_data`, `stage2_strategy`, `stage3_execution`) with certified math in `qbeast_exec`. Enforce zero survivorship bias via 8 point-in-time DDQ universes and block illiquid/circuit-locked names via `TradabilityGate` (Staircase v2.4.1). Enforce statutory Indian tax across financial years.
+- **IMPLEMENTATION**:
+  - Modularized data loading and tradability in Stage 1, strategy logic in Stage 2, and execution/reconciliation in Stage 3.
+  - Integrated `TradabilityGate` into `loader.py` and `tradability.py` to continuously filter out unexecutable stocks.
+  - Implemented dual execution engines (internal fast ledger and NautilusTrader 2.0.0rc5).
+  - Added statutory Indian capital gains tax accounting (STCG 20%, LTCG 12.5% across April-March financial years).
+- **RESULT**:
+  - Acceptance test verified Rs 0.0000 maximum difference between both execution engines across 2,498 trading sessions. Standardized `summary.json`, `equity.csv`, `dashboard.html`.
+- **INTERPRETATION**:
+  - Core execution infrastructure validated to mathematical precision.
+
+## Entry 017: Experiment Lab Multi-Agent Suite & Real-Time Google Sheets Synchronization
+- **Date**: 2026-10-30
+- **Author**: Antigravity
+- **Files Created/Modified**:
+  - `Experiment_Lab/generator_agent.py`
+  - `Experiment_Lab/runner_agent.py`
+  - `Experiment_Lab/result_agent.py`
+  - `Experiment_Lab/google_sheets.py`
+  - `Experiment_Lab/run_lab.py`
+  - `Experiment_Lab/config.yaml`
+- **DECISION**:
+  - Build an autonomous, multi-agent experiment suite (`Experiment_Lab`) reproducing the queue workflow of `RM_TM_TF_Combo`. Clean up intermediate report scratch folders to prevent disk bloat. Rank runs by benchmark-relative alpha composite score ($0.5 \Delta\text{CAGR} + 0.5 \Delta\text{MaxDD}$). Sync a single clean `Metrics` sheet to Google Sheets.
+- **IMPLEMENTATION**:
+  - Built `generator_agent.py` for Jinja2 template parameter expansion into `outbox/non_processed/`.
+  - Built `runner_agent.py` managing concurrent backtests with `ThreadPoolExecutor` and automatic `shutil.rmtree(exp_report_dir)` upon staging results into `Backtest_Results/processed/<run_id>/`.
+  - Built `result_agent.py` parsing 18 verified metrics from `summary.json`, computing the benchmark-relative composite score, and generating formatted `metrics.xlsx` with frozen headers and green conditional highlighting for $\text{Score} \ge 0.0$.
+  - Built `google_sheets.py` mirroring `metrics.xlsx` to Google Sheets.
+- **RESULT**:
+  - Verified full multi-agent cycle. Reports staged without disk bloat, Excel generated, and Google Sheets updated in real time.
+- **INTERPRETATION**:
+  - High-throughput experimentation engine is fully operational for automated parameter sweeps.
+
+## Entry 018: HPC Slurm and Singularity Execution Infrastructure Optimization
+- **Date**: 2026-10-30
+- **Author**: Antigravity
+- **Files Modified**:
+  - `Experiment_Lab/config.yaml`
+  - `Experiment_Lab/runner_agent.py`
+- **DECISION**:
+  - Run high-throughput sweeps inside a containerized Singularity environment (`container.sif`) under Slurm on `/scratch/data/p23et0001/jenish/BTP`. Optimize XGBoost threading to prevent compute node CPU contention.
+- **IMPLEMENTATION**:
+  - Verified `container.sif` + `.venv/bin/python` under Slurm (`test_job.sh`) on partition `test`: exit code 0.
+  - Optimized XGBoost parameters in `Experiment_Lab/config.yaml` to `tree_method: "hist"` and `n_jobs: 2` (rather than `n_jobs: -1`).
+  - Configured Slurm job allocation to `--cpus-per-task=16` with multiple worker processes.
+- **RESULT**:
+  - Containerized execution runs cleanly with rapid histogram tree construction and zero thread contention.
+- **INTERPRETATION**:
+  - The engineering and infrastructure phase is officially closed; project focus shifts completely to strategy improvisation and quantitative alpha factor research for Indian markets.
+

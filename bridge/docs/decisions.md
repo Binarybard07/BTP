@@ -63,3 +63,41 @@
 ## Decision 16: Strategy Reporting Simplification & Recorder Decoupling
 - **Status**: Established
 - **Rationale**: Custom recorder infrastructure, telemetry accumulators, internal state tracking dictionaries/lists, and manifest export plumbing have been decoupled from the strategy execution loop. Strategy performance reporting delegates directly to native NautilusTrader output artifacts (`orders.csv`, `positions.csv`, `account.csv`, `stats.csv`, `returns_series.csv`) and HTML tearsheets via `NautilusExporter`.
+
+## Decision 17: Completion and Freezing of Foundational Infrastructure (Stage 1-2-3)
+- **Status**: Established & Frozen
+- **Rationale**: The core quantitative trading architecture is complete, verified, and locked:
+  - Stage 1 (Data & Tradability): Point-in-time constituent membership across 8 dynamic DDQ universes eliminating survivorship bias, combined with the Staircase v2.4.1 tradability gate filtering circuit-locked and illiquid stocks.
+  - Stage 2 (Modular Strategy): Strictly typed `MarketData` and `StrategyOutput` contracts, expanding walk-forward retraining with target realization cutoffs ($T_{\text{cutoff}} \le T_{\text{decision}} - H$), model/selector abstractions, and clean risk budgeting.
+  - Stage 3 (Dual Execution & Costs): Dual execution engine (internal ledger simulation and event-driven NautilusTrader 2.0.0rc5 harness) with statutory Indian delivery fees (STT, turnover, SEBI, stamp, GST, DP fees), adverse tick slippage, price bands, and Indian capital gains tax (STCG/LTCG).
+  - No further foundational infrastructure changes are permitted; all active work transitions to strategy research and factor improvisation.
+
+## Decision 18: Completion and Operationalization of Experiment Lab Multi-Agent Suite
+- **Status**: Established & Operational
+- **Rationale**: The Experiment Lab is fully operational as an autonomous, multi-agent experimentation pipeline:
+  - `generator_agent.py`: Renders parameterized strategy scripts from Jinja2 templates into `outbox/non_processed/`.
+  - `runner_agent.py`: Concurrently executes strategy scripts via `ThreadPoolExecutor` and automatically purges intermediate report scratch folders (`Backtest_Module/reports/experiments/<run_id>`) upon staging results into `Backtest_Results/processed/<run_id>/` to prevent disk exhaustion.
+  - `result_agent.py`: Extracts verified metrics from `summary.json`, computes the benchmark-relative composite score, and compiles formatted `metrics.xlsx`.
+  - `google_sheets.py`: Mirrors `metrics.xlsx` into Google Sheets in real time with frozen headers and conditional highlighting.
+
+## Decision 19: Benchmark-Relative Composite Score Metric
+- **Status**: Established
+- **Rationale**: Strategy combinations in Experiment Lab are ranked using a benchmark-relative alpha score:
+  $$\text{Score} = 0.5 \times (\text{CAGR} - \text{Benchmark\_CAGR}) + 0.5 \times (\text{MaxDD} - \text{Benchmark\_MaxDD})$$
+  - Both CAGR and MaxDD in `summary.json` share percentage units.
+  - Because MaxDD is negative, a strategy with smaller drawdown than the benchmark (e.g. $-25\%$ vs $-38\%$) receives a positive drawdown contribution ($(-25) - (-38) = +13$), directly rewarding capital preservation.
+  - Strategies achieving $\text{Score} \ge 0.0$ generate superior risk-adjusted alpha over the buy-and-hold benchmark and are highlighted in soft green (`#C6EFCE`).
+
+## Decision 20: High-Throughput Cluster Execution (Singularity + Slurm + Hist XGBoost)
+- **Status**: Established
+- **Rationale**: Large grid sweeps (e.g., 1,000+ combinations) run on high-performance computing clusters under Slurm inside the containerized environment (`container.sif` + `.venv/bin/python`) on `/scratch/data/p23et0001/jenish/BTP`.
+  - To prevent CPU thread contention and process stalls on multi-core Slurm compute nodes, XGBoost is configured to `tree_method: "hist"` and `n_jobs: 2` (rather than `n_jobs: -1`).
+  - Slurm allocations use `--cpus-per-task=16` or `8` with multiple worker processes managed by `runner_agent.py`.
+
+## Decision 21: Quantitative Research & Strategy Improvisation Framework for Indian Markets
+- **Status**: Established
+- **Rationale**: All future research leverages the frozen architecture to formulate robust alpha models specifically tuned to Indian equity market characteristics:
+  - Only scale-independent, stationary features (ratios, percentage returns, normalized volatility, cross-sectional ranks) are permitted in cross-sectional models.
+  - Lookahead bias is strictly prevented by expanding-window realization cutoffs.
+  - Evaluations prioritize point-in-time `_ddq` universes across diverse market regimes (pre-COVID, 2020 crash, 2021 bull run, 2022-2024 rate cycle).
+

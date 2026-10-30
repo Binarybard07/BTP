@@ -39,3 +39,32 @@
     6. Dashboard.
 - **Current Pipeline**: `CSVDataLoader` -> `DataValidator` -> `FeatureEngine` -> `TargetEngine` -> `TrainingDatasetBuilder` -> `XGBoostRegressor` -> `TopNSelector` -> `EqualWeightPortfolio` -> `BaseRiskManager` / `FixedPercentageRiskManager` -> `Rebalancer` (Nautilus with `IndianEquityDeliveryFeeModel` & `SlippageFillModel`) -> `NautilusExporter`.
 - **Next Research Step**: Inspect existing trade and order management mechanisms in `Rebalancer` and `XGBoostRegressorStrategy` to prepare requirements for the upcoming Trade Management module without duplicating functionality or modifying established execution behavior.
+
+## Entry 004: Modular Backtesting Architecture Completion, Tradability Gate, Survivorship Control, and Statutory Tax
+- **Date**: 2026-10-25
+- **Topic**: Full System Architecture Integration & Engine Reconciliation
+- **Summary**: Successfully unified the backtesting pipeline into a three-stage modular architecture (`qbeast_backtest` and `qbeast_exec`):
+  - **Stage 1 (Data & Tradability)**: Integrated point-in-time index constituent membership across 8 dynamic DDQ universes (`nifty50_ddq` to `totalmarket_ddq`) eliminating survivorship bias. Enforced `TradabilityGate` (Staircase v2.4.1) filtering out illiquid and circuit-hit instruments.
+  - **Stage 2 (Modular Strategy)**: Implemented `StrategyBase` contract consuming `MarketData` and returning `StrategyOutput`. Implemented expanding walk-forward retraining with strict target realization cutoffs ($T_{\text{cutoff}} \le T_{\text{decision}} - \text{target\_horizon}$) to eliminate future lookahead.
+  - **Stage 3 (Dual Execution & Costs)**: Reconciled high-speed internal ledger simulation with event-driven NautilusTrader 2.0.0rc5 engine (Rs 0.0000 maximum difference). Modeled statutory Indian delivery fees (STT, turnover, SEBI, stamp, GST, DP charges), adverse tick slippage, price bands, and Indian capital gains tax (STCG at 20% / LTCG at 12.5% across April-March financial years).
+  - **Reporting**: Integrated interactive `dashboard.html` performance tearsheet, daily `equity.csv`, and comprehensive 18-metric `summary.json`.
+- **Current Pipeline**: `Stage 1 (loader + tradability)` -> `Stage 2 (strategy + ML walk-forward)` -> `Stage 3 (internal ledger / Nautilus execution)` -> `summary.json / dashboard.html`.
+- **Outcome**: The architectural foundation is complete, verified, and frozen.
+
+## Entry 005: Experiment Lab Multi-Agent Suite & Transition to Strategy Improvisation for Indian Equities
+- **Date**: 2026-10-30
+- **Topic**: Autonomous Experimentation Suite & Indian Equity Alpha Factor Research
+- **Summary**: Built and verified the autonomous `Experiment_Lab` multi-agent framework and transitioned the project completely to quantitative strategy research and factor improvisation for Indian equities (NSE).
+  - **Experiment Lab Multi-Agent Architecture**:
+    - `generator_agent.py`: Renders parameterized strategy scripts from Jinja2 templates.
+    - `runner_agent.py`: Executes strategies in parallel via `ThreadPoolExecutor` and automatically purges intermediate scratch folders (`Backtest_Module/reports/experiments/<run_id>`) upon staging results into `Backtest_Results/processed/<run_id>/` to prevent disk exhaustion.
+    - `result_agent.py`: Parses 18 real metrics from `summary.json`, computes the benchmark-relative composite score ($0.5 \Delta\text{CAGR} + 0.5 \Delta\text{MaxDD}$), and formats `metrics.xlsx`.
+    - `google_sheets.py`: Mirrors `metrics.xlsx` into Google Sheets in real time with frozen headers and conditional highlighting for outperforming runs ($\text{Score} \ge 0.0$).
+  - **HPC Cluster Scalability**: Containerized inside `container.sif` on `/scratch/data/p23et0001/jenish/BTP` with Slurm. Tuned XGBoost to `tree_method: "hist"` and `n_jobs: 2` to eliminate CPU contention across 1,000+ combination sweeps.
+  - **Active Research Framework for Indian Markets**:
+    1. *Alpha Factor Engineering*: Developing scale-independent signals: cross-sectional momentum (12-1M, ROC 10d-252d), trend distances (`Close / SMA50`, `Close / SMA200`), realized volatility (10d, 21d, 63d), normalized ATR, volume surge ratios, and cross-sectional rank/z-score transformations.
+    2. *Model Exploration*: Testing alternative supervised learners (LightGBM, CatBoost, pairwise ranking objectives) on top of the established `BaseModel` contract.
+    3. *Execution Horizon Optimization*: Sweeping rebalance frequencies (weekly, monthly, quarterly) against target horizons (10d, 21d, 63d) to determine optimal trade-offs against Indian delivery transaction costs.
+    4. *Downside Risk Mitigation*: Evaluating volatility-scaled position sizing and dynamic capital deployment to minimize drawdown during market crash regimes.
+- **Current Pipeline**: `Experiment_Lab (generator -> runner -> result -> google_sheets)` -> `Backtest_Module (Stage 1-2-3)` -> `metrics.xlsx / Google Sheets`.
+

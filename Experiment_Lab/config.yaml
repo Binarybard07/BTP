@@ -1,7 +1,7 @@
 # ==============================================================================
 # Exhaustive Grid Search Configuration for Experiment Lab
 # ==============================================================================
-# Modular, Strategy-Agnostic architecture mirroring RM_TM_TF_Combo:
+# Modular, Strategy-Agnostic architecture
 # Every module (model, selector, portfolio, risk_manager) specifies:
 #   pkg: <package_path>
 #   cls: <class_name>
@@ -13,23 +13,23 @@
 #   - "explicit": Run only explicit combinations listed under 'explicit_combinations'.
 # ==============================================================================
 
-experiment_name: "exhaustive_ofat_experiments"
+experiment_name: "grid_search_experiments"
 engine: "nautilus"
-mode: "ofat"                 # Options: "grid", "ofat", "explicit"
+mode: "grid"                 # Options: "grid", "ofat", "explicit"
 
 execution:
   max_workers: 8            # Parallel backtest execution count
   timeout_seconds: 3600     # 60-minute timeout per backtest
 
 # ------------------------------------------------------------------------------
-# 1. Baseline Configuration (Sensible Reference Model)
+# 1. Baseline Configuration (Reference Model)
 # ------------------------------------------------------------------------------
 baseline:
   universe: "nifty500_ddq"
-  start_date: "2019-01-01"
-  end_date: "2027-01-01"
+  start_date: "2016-01-01"  # Fixed 10-year research window start
+  end_date: "2026-05-29"    # Fixed benchmark window end
   rebalance_frequency: "monthly"
-  min_train_days: 1260
+  min_train_days: 1260      # Fixed 5 years warmup (5 x 252 trading sessions)
   target_horizon: 21
 
   # Model Component (Unified contract: pkg, cls, params)
@@ -39,74 +39,99 @@ baseline:
     params:
       n_estimators: 100
       max_depth: 3
-      tree_method: "hist"
       learning_rate: 0.05
       subsample: 0.80
       colsample_bytree: 0.80
       reg_alpha: 0.1
       reg_lambda: 1.0
       random_state: 42
+      tree_method: "hist"
       n_jobs: 2
 
-  # Selector Component (PercentileSelector)
+  # Selector Component
   selector:
     pkg: "equity_strategy.selection.percentile"
     cls: "PercentileSelector"
     params:
       percentile: 0.85
 
-  # Portfolio Component (EqualWeightPortfolio)
+  # Portfolio Component
   portfolio:
     pkg: "equity_strategy.portfolio.equal_weight"
     cls: "EqualWeightPortfolio"
     params: {}
 
-  # Risk Manager Component (FixedPercentageRiskManager)
+  # Risk Manager Component
   risk_manager:
     pkg: "equity_strategy.risk_management.fixed_percentage"
     cls: "FixedPercentageRiskManager"
     params:
-      max_deployment_pct: 0.90
+      max_deployment_pct: 0.85
 
-  # Baseline Feature Set
+  # Comprehensive Multi-Factor Baseline Feature Set (16 logical features)
   features:
+    # --- Multi-Horizon Momentum (Short to Long Lookbacks) ---
+    return_5:
+      indicator: "returns"
+      params: {period: 5}
+    return_10:
+      indicator: "returns"
+      params: {period: 10}
     return_21:
       indicator: "returns"
       params: {period: 21}
     return_63:
       indicator: "returns"
       params: {period: 63}
+    return_126:
+      indicator: "returns"
+      params: {period: 126}
     return_252:
       indicator: "returns"
       params: {period: 252}
-    close_to_ma50:
+
+    # --- Trend / Mean Reversion (Normalized Distance: Close / MA) ---
+    close_to_sma20:
+      indicator: "close_to_sma"
+      params: {period: 20}
+    close_to_sma50:
       indicator: "close_to_sma"
       params: {period: 50}
-    close_to_ma200:
+    close_to_sma100:
+      indicator: "close_to_sma"
+      params: {period: 100}
+    close_to_sma200:
       indicator: "close_to_sma"
       params: {period: 200}
+    close_to_ema20:
+      indicator: "close_to_ema"
+      params: {period: 20}
+    close_to_ema50:
+      indicator: "close_to_ema"
+      params: {period: 50}
+
+    # --- Volatility & Risk Dynamics (Realized Volatility) ---
+    volatility_10:
+      indicator: "rolling_std"
+      params: {period: 10}
     volatility_21:
       indicator: "rolling_std"
       params: {period: 21}
+    volatility_63:
+      indicator: "rolling_std"
+      params: {period: 63}
+
+    # --- Momentum Acceleration (Rate of Change) ---
+    roc_21:
+      indicator: "roc"
+      params: {period: 21}
 
 # ------------------------------------------------------------------------------
-# 2. Exhaustive Variations Grid
+# 2. Grid Variations
 # ------------------------------------------------------------------------------
 variations:
-  # ----------------------------------------------------------------------------
-  # A. ALL 16 UNIVERSES (8 Standard + 8 DDQ Survivorship-Free)
-  # ----------------------------------------------------------------------------
+  # A. ALL 8 DDQ UNIVERSES
   universe:
-    # Standard Presets
-    - "nifty50"
-    - "nifty100"
-    - "nifty200"
-    - "nifty500"
-    - "midcap50"
-    - "midcap100"
-    - "midcap150"
-    - "smallcap250"
-    # DDQ Presets (Point-in-Time Membership)
     - "nifty50_ddq"
     - "nifty100_ddq"
     - "nifty200_ddq"
@@ -116,234 +141,37 @@ variations:
     - "midcap150_ddq"
     - "smallcap250_ddq"
 
-  # ----------------------------------------------------------------------------
-  # B. MULTIPLE START & END DATES (Logical Market Regimes)
-  # ----------------------------------------------------------------------------
-  start_date:
-    - "2016-01-01"          # Full Cycle (10 Years: Pre-COVID + COVId + Post-COVID -> Present)
-    - "2019-01-01"          # COVID START + POST-COVID Bull & Rate-Hike Regime
-    - "2022-01-01"          # Recent 4-Year Out-of-Sample Window
-
-  end_date:
-    - "2024-01-01"          # In-Sample Training Boundary
-    - "2026-05-29"          # Official Research Benchmark Date
-    - "2027-01-01"          # Extended Out-of-Sample Horizon
-
-  # ----------------------------------------------------------------------------
-  # C. SUPPORTED REBALANCE FREQUENCIES (Derived from loader.py)
-  # ----------------------------------------------------------------------------
+  # B. Rebalance Frequencies
   rebalance_frequency:
-    - "weekly"              # High-frequency tactical turnover
-    - "monthly"             # Standard institutional rebalancing
-    - "quarterly"           # Low-turnover, macro trend following
+    - "monthly"
+    - "quarterly"
 
-  # ----------------------------------------------------------------------------
-  # D. MINIMUM TRAINING WARMUP DAYS (min_train_days)
-  # ----------------------------------------------------------------------------
-  min_train_days:
-    - 252                   # 1 Trading Year
-    - 756                   # 3 Trading Years
-    - 1260                  # 5 Trading Years
-
-  # ----------------------------------------------------------------------------
-  # E. TARGET FORWARD HORIZONS (target_horizon in trading days)
-  # ----------------------------------------------------------------------------
+  # C. Forward Target Horizons
   target_horizon:
-    - 5                     # 1-Week Forward Return
-    - 10                    # 2-Week Forward Return
-    - 21                    # 1-Month Forward Return (~21 trading days)
-    - 30                    # 30-Day Forward Return
-    - 63                    # 1-Quarter Forward Return (~63 trading days)
+    - 10
+    - 21
+    - 63
 
-  # ----------------------------------------------------------------------------
-  # F. MODEL METHODS (Plug-and-play with pkg, cls, params)
-  # ----------------------------------------------------------------------------
-  model:
-    - pkg: "equity_strategy.models.xgboost_regressor"
-      cls: "XGBoostRegressor"
-      params:
-        tree_method: ["hist"]
-        n_estimators: [50, 100, 200, 300]
-        max_depth: [2, 3, 4, 6]
-        learning_rate: [0.01, 0.03, 0.05, 0.10]
-        subsample: [0.60, 0.80, 1.00]
-        colsample_bytree: [0.60, 0.80, 1.00]
-        reg_alpha: [0.0, 0.1, 1.0]          # L1 regularization (Lasso sparsity)
-        reg_lambda: [0.5, 1.0, 5.0]         # L2 regularization (Ridge shrinkage)
-
-  # ----------------------------------------------------------------------------
-  # G. SELECTOR METHODS (Plug-and-play with pkg, cls, params)
-  # ----------------------------------------------------------------------------
+  # D. Stock Selection Strategy
   selector:
-    # 1. PercentileSelector (Cross-sectional percentile ranking)
+    # 1. Percentile Ranking (Top 25%, Top 20%, Top 15%, Top 10% quantiles)
     - pkg: "equity_strategy.selection.percentile"
       cls: "PercentileSelector"
       params:
-        percentile: [0.75, 0.80, 0.85, 0.90, 0.95]
+        percentile: [0.75, 0.80, 0.90]
 
-    # 2. TopNSelector (Fixed constituent count)
+    # 2. Fixed Basket Selection
     - pkg: "equity_strategy.selection.top_n"
       cls: "TopNSelector"
       params:
-        n: [5, 10, 15, 20, 30]
+        n: [10, 20]
 
-    # 3. ThresholdSelector (Absolute predicted return hurdle)
-    - pkg: "equity_strategy.selection.threshold"
-      cls: "ThresholdSelector"
-      params:
-        threshold: [0.00, 0.01, 0.02, 0.05]
-        inclusive: false
-
-  # ----------------------------------------------------------------------------
-  # G. PORTFOLIO METHODS (Plug-and-play with pkg, cls, params)
-  # ----------------------------------------------------------------------------
-  portfolio:
-    - pkg: "equity_strategy.portfolio.equal_weight"
-      cls: "EqualWeightPortfolio"
-      params: {}
-
-  # ----------------------------------------------------------------------------
-  # H. RISK MANAGEMENT (Capital Deployment Ceiling <= 0.97)
-  # ----------------------------------------------------------------------------
+  # E. Risk Management
   risk_manager:
     - pkg: "equity_strategy.risk_management.fixed_percentage"
       cls: "FixedPercentageRiskManager"
       params:
-        max_deployment_pct: [0.60, 0.75, 0.85, 0.90, 0.97]
-
-  # ----------------------------------------------------------------------------
-  # I. FEATURE ENGINEERING VARIATIONS (Plug-and-play with indicator, params)
-  # ----------------------------------------------------------------------------
-  features:
-    # 1. Multi-Horizon Pure Momentum (Short to Long Lookbacks)
-    - return_5:
-        indicator: "returns"
-        params: {period: 5}
-      return_10:
-        indicator: "returns"
-        params: {period: 10}
-      return_21:
-        indicator: "returns"
-        params: {period: 21}
-      return_63:
-        indicator: "returns"
-        params: {period: 63}
-      return_126:
-        indicator: "returns"
-        params: {period: 126}
-      return_252:
-        indicator: "returns"
-        params: {period: 252}
-
-    # 2. Moving Average Extension & Distance-from-Trend (Mean Reversion)
-    - close_to_sma20:
-        indicator: "close_to_sma"
-        params: {period: 20}
-      close_to_sma50:
-        indicator: "close_to_sma"
-        params: {period: 50}
-      close_to_sma100:
-        indicator: "close_to_sma"
-        params: {period: 100}
-      close_to_sma200:
-        indicator: "close_to_sma"
-        params: {period: 200}
-      close_to_ema20:
-        indicator: "close_to_ema"
-        params: {period: 20}
-      close_to_ema50:
-        indicator: "close_to_ema"
-        params: {period: 50}
-
-    # 3. Volatility-Normalized & Risk Dynamics (Risk-Adjusted Momentum)
-    - return_10:
-        indicator: "returns"
-        params: {period: 10}
-      return_21:
-        indicator: "returns"
-        params: {period: 21}
-      return_63:
-        indicator: "returns"
-        params: {period: 63}
-      volatility_10:
-        indicator: "rolling_std"
-        params: {period: 10}
-      volatility_21:
-        indicator: "rolling_std"
-        params: {period: 21}
-      volatility_63:
-        indicator: "rolling_std"
-        params: {period: 63}
-
-    # 4. Comprehensive Multi-Factor Matrix (Momentum + ROC + Trend + Volatility)
-    - return_21:
-        indicator: "returns"
-        params: {period: 21}
-      return_63:
-        indicator: "returns"
-        params: {period: 63}
-      return_252:
-        indicator: "returns"
-        params: {period: 252}
-      roc_21:
-        indicator: "roc"
-        params: {period: 21}
-      close_to_sma50:
-        indicator: "close_to_sma"
-        params: {period: 50}
-      close_to_sma200:
-        indicator: "close_to_sma"
-        params: {period: 200}
-      close_to_ema50:
-        indicator: "close_to_ema"
-        params: {period: 50}
-      volatility_21:
-        indicator: "rolling_std"
-        params: {period: 21}
-      volatility_63:
-        indicator: "rolling_std"
-        params: {period: 63}
-
-    # 5. Short-Term Tactical / Swing Horizon (Weekly Rebalance & 5-10d Targets)
-    - return_5:
-        indicator: "returns"
-        params: {period: 5}
-      return_10:
-        indicator: "returns"
-        params: {period: 10}
-      roc_10:
-        indicator: "roc"
-        params: {period: 10}
-      close_to_ema10:
-        indicator: "close_to_ema"
-        params: {period: 10}
-      close_to_sma20:
-        indicator: "close_to_sma"
-        params: {period: 20}
-      volatility_10:
-        indicator: "rolling_std"
-        params: {period: 10}
-
-    # 6. Long-Term Macro / Slow Trend Horizon (Quarterly Rebalance & 63d Targets)
-    - return_63:
-        indicator: "returns"
-        params: {period: 63}
-      return_126:
-        indicator: "returns"
-        params: {period: 126}
-      return_252:
-        indicator: "returns"
-        params: {period: 252}
-      close_to_sma100:
-        indicator: "close_to_sma"
-        params: {period: 100}
-      close_to_sma200:
-        indicator: "close_to_sma"
-        params: {period: 200}
-      volatility_63:
-        indicator: "rolling_std"
-        params: {period: 63}
-  
+        max_deployment_pct: [0.70, 0.85, 0.95]
 
 
 # ------------------------------------------------------------------------------
