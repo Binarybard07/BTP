@@ -27,7 +27,7 @@ execution:
 baseline:
   universe: "nifty500_ddq"
   start_date: "2016-01-01"  # Fixed 10-year research window start
-  end_date: "2026-05-29"    # Fixed benchmark window end
+  end_date: "2027-01-01"    # Fixed benchmark window end
   rebalance_frequency: "monthly"
   min_train_days: 1260      # Fixed 5 years warmup (5 x 252 trading sessions)
   target_horizon: 21

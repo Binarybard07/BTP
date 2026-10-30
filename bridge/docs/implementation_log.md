@@ -315,3 +315,34 @@
 - **INTERPRETATION**:
   - The engineering and infrastructure phase is officially closed; project focus shifts completely to strategy improvisation and quantitative alpha factor research for Indian markets.
 
+## Entry 020: Matrix Sheet Design 1C (Steel Graphite & Frost) & Dynamic Discovery
+- **Date**: 2026-10-30
+- **Author**: Antigravity
+- **Files Modified**:
+  - `Experiment_Lab/result_agent.py`
+  - `Experiment_Lab/google_sheets.py`
+  - `bridge/docs/decisions.md`
+- **DECISION**:
+  - Upgrade Matrix sheet styling to **Design 1C: Steel Graphite & Frost**.
+  - Completely eliminate saturated greens, dark navy, and harsh peach from table headers and structural columns.
+  - Reserve green fills and gradients strictly for passing/superior alpha metrics (Score > 0, CAGR > 20%, MaxDD > -15%).
+  - Ensure dynamic universe discovery so only universes present in the primary run data appear in the Matrix sheet.
+- **IMPLEMENTATION**:
+  - `result_agent.py`:
+    - Updated `format_matrix_sheet()` with Design 1C openpyxl styles:
+      - Main headers A-E: Frosted Silver Gray (`#E5E7EB`) with bold graphite text (`#111827`).
+      - Strategy super-header: Frosted Indigo (`#E0E7FF`, `#3730A3`); sub-headers in Pale Indigo (`#EEF2FF`, `#4338CA`).
+      - Index super-header: Neutral Zinc (`#F4F4F5`, `#27272A`); sub-headers in Pale Zinc (`#FAFAFA`, `#52525B`).
+      - Universe column: Frost White / Soft Slate (`#F3F4F6`) with bold dark slate text (`#1F2937`).
+      - Block bottom divider: Medium slate (`#6B7280`); header bottom divider (`#4B5563`).
+    - Updated `get_cagr_style()`, `get_drawdown_style()`, and `get_score_style()` with clean pastel gradient bands.
+  - `google_sheets.py`:
+    - Replaced navy/green/peach styling in `sync_matrix_tab()` with Design 1C RGB definitions.
+    - Added Index CAGR and Index Drawdown pastel formatting matching the Strategy column gradients.
+- **RESULT**:
+  - Re-generated local `metrics.xlsx` with Design 1C styles and verified exact color codes and cell formatting across both sheets.
+- **INTERPRETATION**:
+  - Matrix visualization provides a clean, executive, clutter-free comparison of strategy alpha versus benchmarks across dynamic universe slices.
+
+
+

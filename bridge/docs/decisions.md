@@ -80,13 +80,30 @@
   - `result_agent.py`: Extracts verified metrics from `summary.json`, computes the benchmark-relative composite score, and compiles formatted `metrics.xlsx`.
   - `google_sheets.py`: Mirrors `metrics.xlsx` into Google Sheets in real time with frozen headers and conditional highlighting.
 
-## Decision 19: Benchmark-Relative Composite Score Metric
+## Decision 19: Apex Alpha Score Metric & Executive Matrix Sheet
 - **Status**: Established
-- **Rationale**: Strategy combinations in Experiment Lab are ranked using a benchmark-relative alpha score:
-  $$\text{Score} = 0.5 \times (\text{CAGR} - \text{Benchmark\_CAGR}) + 0.5 \times (\text{MaxDD} - \text{Benchmark\_MaxDD})$$
-  - Both CAGR and MaxDD in `summary.json` share percentage units.
-  - Because MaxDD is negative, a strategy with smaller drawdown than the benchmark (e.g. $-25\%$ vs $-38\%$) receives a positive drawdown contribution ($(-25) - (-38) = +13$), directly rewarding capital preservation.
-  - Strategies achieving $\text{Score} \ge 0.0$ generate superior risk-adjusted alpha over the buy-and-hold benchmark and are highlighted in soft green (`#C6EFCE`).
+- **Rationale**: Strategy combinations in Experiment Lab are evaluated and ranked via the **Apex Alpha Score** ($\text{Score}_{\text{Apex}}$) against four strict Green criteria:
+  1. $\text{CAGR} > 20.0\%$
+  2. $\text{CAGR} > \text{Benchmark\_CAGR}$
+  3. Drawdown depth $< 20.0\%$ (signed $\text{MaxDD} > -20.0\%$)
+  4. Drawdown shallower than Benchmark (signed $\text{MaxDD} > \text{Benchmark\_MaxDD}$)
+  
+  - **Apex Alpha Scoring Formula**:
+    $$\text{Score}_{\text{Apex}} = \begin{cases} 
+    \left(\frac{\text{CAGR}}{|\text{MaxDD}|}\right) \times \left(1 + \frac{\text{CAGR} - \text{Benchmark\_CAGR}}{100}\right) & \text{if ALL 4 criteria pass} \\[10pt]
+    \min\left(\text{CAGR} - \max(20.0, \text{Bench\_CAGR}), \;\; \text{MaxDD} - \max(-20.0, \text{Bench\_MaxDD})\right) & \text{if ANY criterion fails}
+    \end{cases}$$
+  - **Properties**:
+    - $\text{Score}_{\text{Apex}} > 0 \iff \text{Apex Tier (Green)}$ (passes all 4 hurdles; minimum passing score is $> 1.0$).
+    - When passing, directly maximizes CAGR while minimizing MaxDD via the Calmar Ratio.
+    - When failing, $\text{Score}_{\text{Apex}} \le 0$, sorting models by the magnitude of their worst bottleneck deficit.
+  - **Executive Matrix Sheet (`WORKSHEET_NAME_Matrix`)**:
+    - Stored as a second tab in the same spreadsheet (`metrics.xlsx` and Google Sheets).
+    - Groups results by `(Universe, Survivorship, From)`.
+    - Selects the single best variation with $\text{Score}_{\text{Apex}} > 0$; displays `N/A` for strategy columns if no run meets the green hurdle.
+    - Features a 2-tier header: `Universe`, `Survivorship`, `From`, `Run_ID`, `Score`, `Strategy` (CAGR, DD), `Index` (CAGR, DD).
+    - Vertically merges the `From` column across `TRUE` and `FALSE` rows per universe, with solid outer frame borders, peach universe highlights, and rich color gradients on numbers.
+
 
 ## Decision 20: High-Throughput Cluster Execution (Singularity + Slurm + Hist XGBoost)
 - **Status**: Established
@@ -100,4 +117,14 @@
   - Only scale-independent, stationary features (ratios, percentage returns, normalized volatility, cross-sectional ranks) are permitted in cross-sectional models.
   - Lookahead bias is strictly prevented by expanding-window realization cutoffs.
   - Evaluations prioritize point-in-time `_ddq` universes across diverse market regimes (pre-COVID, 2020 crash, 2021 bull run, 2022-2024 rate cycle).
+
+## Decision 22: Matrix Sheet Visual Architecture — Design 1C (Steel Graphite & Frost)
+- **Status**: Implemented & Approved
+- **Rationale**: Replaces saturated colors and green headers with an executive, non-green header palette to eliminate visual clutter and reserve green exclusively for positive alpha performance metrics:
+  - **Headers (Cols A-E)**: Frosted Silver Gray (`#E5E7EB`) with dark graphite text (`#111827`).
+  - **Strategy Super-Header (Cols F-G)**: Subtle Frosted Indigo (`#E0E7FF`) with bold deep indigo text (`#3730A3`); sub-headers in Pale Indigo (`#EEF2FF`).
+  - **Index Super-Header (Cols H-I)**: Neutral Zinc (`#F4F4F5`) with deep zinc text (`#27272A`); sub-headers in Pale Zinc (`#FAFAFA`).
+  - **Universe Column (Col A)**: Frost White / Soft Slate (`#F3F4F6`) with bold slate text (`#1F2937`).
+  - **Metric Gradients**: Soft mint (`#D1FAE5`) and pastel green (`#C6F6D5`) for passing/superior performance; butter amber (`#FEF3C7`) and soft coral red (`#FEE2E2`) for sub-hurdle performance.
+  - **Zero Green in Headers**: Ensures clear semantic separation between structural columns and positive return highlights.
 
