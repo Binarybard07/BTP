@@ -21,6 +21,7 @@ wheels/
 Resources/
 nautilus_trader/
 RM_TM_TF_Combo/
+openalgo/
 *.env
 *.sif
 
