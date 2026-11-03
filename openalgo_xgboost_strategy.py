@@ -32,9 +32,9 @@ import os
 import signal
 import sys
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import pandas as pd
 import pytz
@@ -392,22 +392,45 @@ def is_last_trading_day_of_month(d: date) -> bool:
     )
 
 
+def get_last_completed_trading_day(ref_dt: datetime) -> date:
+    """Returns the most recent completed trading session on or before ref_dt."""
+    market_close = ref_dt.replace(hour=MARKET_CLOSE_HOUR, minute=MARKET_CLOSE_MINUTE, second=0, microsecond=0)
+    cur = ref_dt.date() if ref_dt >= market_close else ref_dt.date() - timedelta(days=1)
+    while is_market_holiday(cur, "NSE"):
+        cur -= timedelta(days=1)
+    return cur
+
+
+def get_next_trading_day(ref_date: date) -> date:
+    """Returns the next upcoming trading day strictly after ref_date."""
+    cur = ref_date + timedelta(days=1)
+    while is_market_holiday(cur, "NSE"):
+        cur += timedelta(days=1)
+    return cur
+
+
 def execute_evening_pipeline() -> Optional[Dict[str, Any]]:
     """
     Executes the evening strategy computation outside market hours:
-    1. Checks if current date is the last trading day of the month via OpenAlgo Market Calendar.
-    2. If eligible, trains XGBoost model and calculates target weights.
-    3. Pre-calculates exact share quantities using CSV close prices beforehand.
-    4. Fetches current portfolio positions and pre-computes order deltas, SELL orders, and BUY orders.
-    5. Stages pre-calculated orders for 09:15:00.000 AM market open.
+    1. Determines latest completed trading day and the next upcoming trading day.
+    2. Checks if the completed day is the last trading day of its month.
+    3. If eligible, trains XGBoost model and calculates target weights.
+    4. Pre-calculates exact share quantities using CSV close prices beforehand.
+    5. Fetches current portfolio positions and pre-computes order deltas, SELL orders, and BUY orders.
+    6. Stages pre-calculated orders for the target execution date at market open.
     """
     now = datetime.now(IST)
-    current_date = now.date()
+    last_trading_day = get_last_completed_trading_day(now)
+    target_exec_date = get_next_trading_day(last_trading_day)
 
-    if not is_last_trading_day_of_month(current_date):
-        logger.info(f"Date {current_date} is not the last trading day of the month. No monthly rebalance scheduled.")
+    if not is_last_trading_day_of_month(last_trading_day):
+        logger.info(
+            f"Latest completed session {last_trading_day} is not the last trading day of {last_trading_day.strftime('%B %Y')}. "
+            f"No monthly rebalance scheduled."
+        )
         return {
-            "decision_date": str(current_date),
+            "decision_date": str(last_trading_day),
+            "target_execution_date": str(target_exec_date),
             "is_rebalance": False,
             "target_weights": {},
             "target_quantities": {},
@@ -418,7 +441,10 @@ def execute_evening_pipeline() -> Optional[Dict[str, Any]]:
             "calculated_at": now.isoformat(),
         }
 
-    logger.info(f"Starting evening BTP XGBoost pipeline for universe '{UNIVERSE_NAME}' on {current_date}...")
+    logger.info(
+        f"Monthly rebalance triggered! Completed session {last_trading_day} is month-end. "
+        f"Target execution: {target_exec_date} 09:15:00 AM IST."
+    )
 
     os.environ["QBEAST_BACKTEST_UNIVERSE"] = UNIVERSE_NAME
     md = load_market_data(verbose=False)
@@ -540,7 +566,7 @@ def execute_evening_pipeline() -> Optional[Dict[str, Any]]:
 
     return {
         "decision_date": str(latest_session.date()),
-        "rebalance_date": str(current_date),
+        "target_execution_date": str(target_exec_date),
         "is_rebalance": True,
         "target_weights": target_weights,
         "target_quantities": target_quantities,
@@ -642,6 +668,7 @@ class BTPStrategyDaemon:
     def __init__(self) -> None:
         self.running = True
         self.state = load_state()
+        self.last_status_log_ts = 0.0
 
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
@@ -660,6 +687,39 @@ class BTPStrategyDaemon:
         market_end = now.replace(hour=MARKET_CLOSE_HOUR, minute=MARKET_CLOSE_MINUTE, second=MARKET_CLOSE_SECOND, microsecond=0)
         return market_start <= now <= market_end
 
+    def log_status(self, force: bool = False) -> None:
+        """Logs a concise, useful summary of current strategy mode and market state."""
+        now = datetime.now(IST)
+        now_ts = now.timestamp()
+        if not force and (now_ts - self.last_status_log_ts) < 1800:
+            return
+
+        self.last_status_log_ts = now_ts
+        today_date = now.date()
+        is_open = self.is_market_open_time()
+        pending = self.state.get("pending_rebalance")
+        last_completed = get_last_completed_trading_day(now)
+        next_trading = get_next_trading_day(last_completed)
+
+        if is_open:
+            market_desc = "OPEN (09:15 - 15:30 IST)"
+        elif is_market_holiday(today_date, "NSE"):
+            market_desc = f"CLOSED (Weekend / Holiday: {now.strftime('%A')})"
+        elif now.hour < MARKET_OPEN_HOUR or (now.hour == MARKET_OPEN_HOUR and now.minute < MARKET_OPEN_MINUTE):
+            market_desc = "CLOSED (Pre-market before 09:15 IST)"
+        else:
+            market_desc = "CLOSED (Post-market after 15:30 IST)"
+
+        if pending and pending.get("status") == "PENDING_MARKET_OPEN":
+            target_date = pending.get("target_execution_date", str(next_trading))
+            n_sells = len(pending.get("sell_orders", {}))
+            n_buys = len(pending.get("buy_orders", {}))
+            mode_desc = f"STAGED_REBALANCE (Target: {target_date} 09:15 IST | {n_sells} SELLs, {n_buys} BUYs)"
+        else:
+            mode_desc = f"IDLE (Last session: {last_completed} | Next session: {next_trading})"
+
+        logger.info(f"[Strategy State] Market: {market_desc} | Mode: {mode_desc}")
+
     def wait_until_market_open(self, market_start: datetime) -> None:
         """Precision sub-second wait until exactly 09:15:00.000 IST."""
         diff = (market_start - datetime.now(IST)).total_seconds()
@@ -675,8 +735,9 @@ class BTPStrategyDaemon:
         market_start = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=MARKET_OPEN_SECOND, microsecond=0)
 
         # 1. Evening / Startup ML Model Calculation
-        # Runs outside market hours once per day if not already run today
-        if not self.is_market_open_time() and self.state.get("last_pipeline_run_date") != today_str:
+        # Runs outside market hours if no pending rebalance is staged and not run today
+        has_pending = bool(self.state.get("pending_rebalance") and self.state["pending_rebalance"].get("status") == "PENDING_MARKET_OPEN")
+        if not self.is_market_open_time() and not has_pending and self.state.get("last_pipeline_run_date") != today_str:
             logger.info(f"Strategy active for {today_str} ({now.strftime('%H:%M:%S IST')}). Checking rebalance...")
             try:
                 pipeline_res = execute_evening_pipeline()
@@ -685,10 +746,11 @@ class BTPStrategyDaemon:
                     self.state["last_decision_date"] = pipeline_res["decision_date"]
 
                     if pipeline_res.get("is_rebalance"):
-                        logger.info("Monthly rebalance staged for 09:15:00 AM market open.")
+                        target_exec = pipeline_res["target_execution_date"]
+                        logger.info(f"Monthly rebalance staged for {target_exec} 09:15:00 AM market open.")
                         self.state["pending_rebalance"] = {
                             "decision_date": pipeline_res["decision_date"],
-                            "rebalance_date": pipeline_res.get("rebalance_date", today_str),
+                            "target_execution_date": target_exec,
                             "target_weights": pipeline_res["target_weights"],
                             "target_quantities": pipeline_res.get("target_quantities", {}),
                             "target_prices": pipeline_res.get("target_prices", {}),
@@ -702,6 +764,7 @@ class BTPStrategyDaemon:
                         self.state["pending_rebalance"] = None
 
                     save_state(self.state)
+                    self.log_status(force=True)
             except Exception as e:
                 logger.exception(f"Error during model pipeline execution: {e}")
                 self.state["last_error"] = str(e)
@@ -714,15 +777,14 @@ class BTPStrategyDaemon:
             and pending.get("status") == "PENDING_MARKET_OPEN"
             and self.state.get("last_order_execution_date") != today_str
         ):
-            # Discard stale pending rebalances from past dates
-            staged_rebal_date = pending.get("rebalance_date")
-            if staged_rebal_date and staged_rebal_date != today_str:
-                logger.warning(f"Discarding stale pending rebalance from {staged_rebal_date}. No orders will be placed.")
+            target_exec_date = pending.get("target_execution_date")
+            if target_exec_date and target_exec_date < today_str:
+                logger.warning(f"Discarding expired pending rebalance for {target_exec_date}. No orders will be placed.")
                 self.state["pending_rebalance"] = None
                 save_state(self.state)
                 pending = None
 
-            if pending and not is_market_holiday(now.date(), "NSE"):
+            if pending and target_exec_date == today_str and not is_market_holiday(now.date(), "NSE"):
                 # Precision countdown if within 30 seconds of market open
                 if now < market_start:
                     secs_left = (market_start - now).total_seconds()
@@ -747,6 +809,7 @@ class BTPStrategyDaemon:
                         self.state["pending_rebalance"] = None
                         save_state(self.state)
                         logger.info("Market Open rebalance successfully completed.")
+                        self.log_status(force=True)
                     except Exception as e:
                         logger.exception(f"Error executing rebalance: {e}")
                         self.state["last_error"] = str(e)
@@ -755,6 +818,8 @@ class BTPStrategyDaemon:
     def run(self, poll_interval_seconds: int = 15) -> None:
         """Main continuous strategy loop with adaptive sub-second precision near 09:15:00."""
         logger.info(f"BTP XGBoost Strategy Daemon started. Universe: '{UNIVERSE_NAME}' | Strategy: '{STRATEGY_NAME}'")
+        self.log_status(force=True)
+
         while self.running:
             try:
                 self.run_cycle()
@@ -762,10 +827,20 @@ class BTPStrategyDaemon:
                 logger.exception(f"Unhandled error in main loop: {e}")
 
             now = datetime.now(IST)
+            today_str = now.strftime("%Y-%m-%d")
             market_start = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=MARKET_OPEN_SECOND, microsecond=0)
             pending = self.state.get("pending_rebalance")
 
-            if pending and pending.get("status") == "PENDING_MARKET_OPEN" and not is_market_holiday(now.date(), "NSE") and now < market_start:
+            # Periodic status check-in every 30 mins
+            self.log_status()
+
+            if (
+                pending
+                and pending.get("status") == "PENDING_MARKET_OPEN"
+                and pending.get("target_execution_date") == today_str
+                and not is_market_holiday(now.date(), "NSE")
+                and now < market_start
+            ):
                 secs_to_open = (market_start - now).total_seconds()
                 sleep_time = 0.5 if secs_to_open <= 30 else (2.0 if secs_to_open <= 120 else min(poll_interval_seconds, max(1.0, secs_to_open - 30)))
             else:
