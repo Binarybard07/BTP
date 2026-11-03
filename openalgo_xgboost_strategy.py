@@ -56,6 +56,7 @@ os.chdir(BTP_ROOT)
 # Set absolute data paths so loader.py and config.py always find the datasets
 os.environ["QBEAST_DATA_ROOT"] = str((BTP_ROOT / "data" / "Final_With_Survivorship_Data").resolve())
 os.environ["QBEAST_MEMBERSHIP_ROOT"] = str((BTP_ROOT / "data" / "Survivorship_Bias").resolve())
+os.environ["LOG_DIR"] = str((BTP_ROOT / "OpenAlgo" / "log").resolve())
 
 # Add BTP modules and OpenAlgo to sys.path
 sys.path.insert(0, str(BTP_ROOT / "src"))
