@@ -248,7 +248,9 @@ def get_current_positions_and_holdings(client: OpenAlgoAPI) -> Dict[str, int]:
     try:
         holdings_res = client.holdings()
         if isinstance(holdings_res, dict) and holdings_res.get("status") == "success":
-            for item in holdings_res.get("data", []):
+            data = holdings_res.get("data", {})
+            holdings_list = data.get("holdings", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+            for item in holdings_list:
                 if isinstance(item, dict):
                     sym = str(item.get("symbol", "")).upper()
                     qty = int(item.get("quantity", 0))
@@ -261,7 +263,9 @@ def get_current_positions_and_holdings(client: OpenAlgoAPI) -> Dict[str, int]:
     try:
         pos_res = client.positionbook()
         if isinstance(pos_res, dict) and pos_res.get("status") == "success":
-            for item in pos_res.get("data", []):
+            data = pos_res.get("data", [])
+            pos_list = data if isinstance(data, list) else (data.get("positions", []) if isinstance(data, dict) else [])
+            for item in pos_list:
                 if isinstance(item, dict):
                     sym = str(item.get("symbol", "")).upper()
                     qty = int(item.get("quantity", 0))
