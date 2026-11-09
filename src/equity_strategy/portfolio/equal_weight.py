@@ -11,12 +11,13 @@ class EqualWeightPortfolio(BasePortfolio):
         weight = 1.0 / len(selected_stocks)
     """
 
-    def construct(self, symbols: List[str]) -> Dict[str, float]:
+    def construct(self, symbols: List[str], **kwargs) -> Dict[str, float]:
         """
         Calculates equal target weights for all provided symbols.
 
         Parameters:
             symbols: List of selected stock symbols.
+            **kwargs: Ignored context arguments for interface consistency.
 
         Returns:
             Dict[str, float]: Mapping of symbol to equal weight (1 / N).

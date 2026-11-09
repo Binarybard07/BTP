@@ -17,6 +17,7 @@ from equity_strategy.selection.base import BaseSelector
 from equity_strategy.selection.percentile import PercentileSelector
 from equity_strategy.portfolio.base import BasePortfolio
 from equity_strategy.portfolio.equal_weight import EqualWeightPortfolio
+from equity_strategy.portfolio.inverse_volatility import InverseVolatilityPortfolio
 from equity_strategy.risk_management.base import BaseRiskManager
 from equity_strategy.risk_management.fixed_percentage import FixedPercentageRiskManager
 
@@ -37,6 +38,7 @@ __all__ = [
     "PercentileSelector",
     "BasePortfolio",
     "EqualWeightPortfolio",
+    "InverseVolatilityPortfolio",
     "BaseRiskManager",
     "FixedPercentageRiskManager",
     "__version__",

@@ -22,7 +22,7 @@ import sys
 import copy
 import importlib
 import pandas as pd
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from qbeast_backtest.contracts import MarketData, StrategyOutput
 from qbeast_backtest.stage2_strategy.base import StrategyBase
@@ -72,6 +72,7 @@ class XGBoostRegressorStrategy(StrategyBase):
         portfolio: BasePortfolio = None,
         risk_manager: BaseRiskManager = None,
         rebalance_frequency: str = "monthly",
+        drawdown_threshold: Optional[float] = 0.30,
         **kwargs: Any,
     ) -> None:
         self.feature_engine = feature_engine
@@ -82,6 +83,11 @@ class XGBoostRegressorStrategy(StrategyBase):
         self.portfolio = portfolio
         self.risk_manager = risk_manager
         self.rebalance_frequency = rebalance_frequency
+        if drawdown_threshold is None or float(drawdown_threshold) <= 0:
+            self.drawdown_threshold = None
+        else:
+            val = float(drawdown_threshold)
+            self.drawdown_threshold = val / 100.0 if val > 1.0 else val
 
     @property
     def feature_columns(self) -> List[str]:
@@ -199,8 +205,16 @@ class XGBoostRegressorStrategy(StrategyBase):
                 posture[t_ts] = "cash"
                 continue
 
+            # Mapping of predicted returns for selected symbols
+            scores_dict = dict(zip(selection_df["Symbol"], selection_df["score"]))
+
             # Construct weighted portfolio allocations
-            raw_weights = self.portfolio.construct(selected_symbols)
+            raw_weights = self.portfolio.construct(
+                selected_symbols,
+                closes=closes,
+                date=t_ts,
+                scores=scores_dict,
+            )
             if not raw_weights:
                 targets[t_ts] = {}
                 exposure[t_ts] = 0.0
@@ -221,6 +235,62 @@ class XGBoostRegressorStrategy(StrategyBase):
             exposure[t_ts] = tot_w
             posture[t_ts] = "sized" if tot_w > 0 else "cash"
 
+        # 6. Apply High-Water Mark Drawdown Exit if configured
+        if self.drawdown_threshold is not None and targets:
+            cal = md.history_closes.index
+            nav = 1.0
+            peak_nav = 1.0
+            halted = False
+            sorted_decision_dates = sorted(targets.keys())
+
+            final_targets: Dict[pd.Timestamp, Dict[str, float]] = {}
+            final_exposure: Dict[pd.Timestamp, float] = {}
+            final_posture: Dict[pd.Timestamp, str] = {}
+
+            for idx, t_dec in enumerate(sorted_decision_dates):
+                # When a new scheduled monthly decision date arrives, halt resets
+                halted = False
+                current_tw = targets[t_dec]
+
+                final_targets[t_dec] = current_tw
+                final_exposure[t_dec] = exposure.get(t_dec, sum(current_tw.values()))
+                final_posture[t_dec] = posture.get(t_dec, "sized" if current_tw else "cash")
+
+                if not current_tw:
+                    continue
+
+                next_dec = (
+                    sorted_decision_dates[idx + 1]
+                    if idx + 1 < len(sorted_decision_dates)
+                    else cal[-1] + pd.Timedelta(days=1)
+                )
+                interim_sessions = cal[(cal > t_dec) & (cal < next_dec)]
+
+                prev_day = t_dec
+                for d in interim_sessions:
+                    if not halted:
+                        r_port = 0.0
+                        for sym, w in current_tw.items():
+                            if sym in closes.columns:
+                                px_today = closes.loc[d, sym]
+                                px_prev = closes.loc[prev_day, sym]
+                                if pd.notna(px_today) and pd.notna(px_prev) and px_prev > 0:
+                                    r_port += w * ((px_today - px_prev) / px_prev)
+                        nav = nav * (1.0 + r_port)
+                        peak_nav = max(peak_nav, nav)
+                        dd = (peak_nav - nav) / peak_nav if peak_nav > 0 else 0.0
+
+                        if dd >= self.drawdown_threshold:
+                            final_targets[d] = {}
+                            final_exposure[d] = 0.0
+                            final_posture[d] = "cash"
+                            halted = True
+                    prev_day = d
+
+            targets = final_targets
+            exposure = final_exposure
+            posture = final_posture
+
         output = StrategyOutput(
             targets=targets,
             exposure=pd.Series(exposure).sort_index() if exposure else None,
@@ -240,6 +310,7 @@ class XGBoostRegressorStrategy(StrategyBase):
                 risk_manager=type(self.risk_manager).__name__,
                 risk_manager_params=_get_params(self.risk_manager),
                 rebalance_frequency=self.rebalance_frequency,
+                drawdown_threshold=self.drawdown_threshold,
             ),
         )
 
@@ -271,6 +342,7 @@ def main() -> int:
         "portfolio": {{ portfolio.cls }}(**{{ portfolio.params | default({}) }}),
         "risk_manager": {{ risk_manager.cls }}(**{{ risk_manager.params | default({}) }}),
         "rebalance_frequency": "{{ rebalance_frequency }}",
+        "drawdown_threshold": {{ drawdown_threshold | default(0.20) }},
     }
 
     # 1. Instantiate strategy explicitly with the centralized configuration block

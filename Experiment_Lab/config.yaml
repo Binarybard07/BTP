@@ -26,11 +26,12 @@ execution:
 # ------------------------------------------------------------------------------
 baseline:
   universe: "nifty500_ddq"
-  start_date: "2016-01-01"  # Fixed 10-year research window start
+  start_date: "2019-01-01"  # Fixed 10-year research window start
   end_date: "2027-01-01"    # Fixed benchmark window end
   rebalance_frequency: "monthly"
   min_train_days: 1260      # Fixed 5 years warmup (5 x 252 trading sessions)
   target_horizon: 21
+  drawdown_threshold: 0.0   # 0 = no dd exit
 
   # Model Component (Unified contract: pkg, cls, params)
   model:
@@ -54,6 +55,7 @@ baseline:
     cls: "PercentileSelector"
     params:
       percentile: 0.85
+      min_return: 0.0
 
   # Portfolio Component
   portfolio:
@@ -130,7 +132,12 @@ baseline:
 # 2. Grid Variations
 # ------------------------------------------------------------------------------
 variations:
-  # A. ALL 8 DDQ UNIVERSES
+  # A. Start Dates (Research Windows)
+  start_date:
+    - "2007-01-01"
+    - "2019-01-01"
+
+  # B. ALL 8 DDQ UNIVERSES
   universe:
     - "nifty50_ddq"
     - "nifty100_ddq"
@@ -141,24 +148,25 @@ variations:
     - "midcap150_ddq"
     - "smallcap250_ddq"
 
-  # B. Rebalance Frequencies
+  # C. Rebalance Frequencies
   rebalance_frequency:
     - "monthly"
     - "quarterly"
 
-  # C. Forward Target Horizons
+  # D. Forward Target Horizons
   target_horizon:
     - 10
     - 21
     - 63
 
-  # D. Stock Selection Strategy
+  # E. Stock Selection Strategy
   selector:
-    # 1. Percentile Ranking (Top 25%, Top 20%, Top 15%, Top 10% quantiles)
+    # 1. Percentile Ranking (Top 25%, Top 20%, Top 10% quantiles) with Return Hurdle (0% and 5%)
     - pkg: "equity_strategy.selection.percentile"
       cls: "PercentileSelector"
       params:
         percentile: [0.75, 0.80, 0.90]
+        min_return: [0.0, 0.05]
 
     # 2. Fixed Basket Selection
     - pkg: "equity_strategy.selection.top_n"
@@ -166,12 +174,35 @@ variations:
       params:
         n: [10, 20]
 
-  # E. Risk Management
+  # F. Portfolio Allocation Strategy
+  portfolio:
+    # 1. Equal-Weighting Control (1/N)
+    - pkg: "equity_strategy.portfolio.equal_weight"
+      cls: "EqualWeightPortfolio"
+      params: {}
+
+    # 2. Alpha-Tilted Inverse Volatility (Sharpe Ratio Weighting)
+    - pkg: "equity_strategy.portfolio.inverse_volatility"
+      cls: "InverseVolatilityPortfolio"
+      params:
+        lookback: [63]
+        min_obs: 40
+        cap_mult: [2.5]
+        use_alpha_tilt: [true]
+
+  # G. Risk Management
   risk_manager:
     - pkg: "equity_strategy.risk_management.fixed_percentage"
       cls: "FixedPercentageRiskManager"
       params:
         max_deployment_pct: [0.70, 0.85, 0.95]
+
+  # H. Drawdown Threshold: 0 (no dd exit), 15%, 20%, 25%
+  drawdown_threshold:
+    - 0.0   # no dd exit
+    - 0.15  # 15% drawdown exit
+    - 0.20  # 20% drawdown exit
+    - 0.25  # 25% drawdown exit
 
 
 # ------------------------------------------------------------------------------
@@ -182,11 +213,12 @@ explicit_combinations:
   - universe: "nifty50_ddq"
     rebalance_frequency: "monthly"
     target_horizon: 21
+    drawdown_threshold: 0.15
     min_train_days: 1260
     selector:
       pkg: "equity_strategy.selection.percentile"
       cls: "PercentileSelector"
-      params: {percentile: 0.90}
+      params: {percentile: 0.90, min_return: 0.0}
     risk_manager:
       pkg: "equity_strategy.risk_management.fixed_percentage"
       cls: "FixedPercentageRiskManager"
@@ -208,6 +240,7 @@ explicit_combinations:
   - universe: "nifty500_ddq"
     rebalance_frequency: "monthly"
     target_horizon: 21
+    drawdown_threshold: 0.20
     min_train_days: 1260
     selector:
       pkg: "equity_strategy.selection.top_n"
@@ -234,6 +267,7 @@ explicit_combinations:
   - universe: "nifty100_ddq"
     rebalance_frequency: "weekly"
     target_horizon: 5
+    drawdown_threshold: 0.25
     min_train_days: 504
     selector:
       pkg: "equity_strategy.selection.top_n"
@@ -260,6 +294,7 @@ explicit_combinations:
   - universe: "nifty200_ddq"
     rebalance_frequency: "monthly"
     target_horizon: 21
+    drawdown_threshold: 0.0
     min_train_days: 756
     selector:
       pkg: "equity_strategy.selection.threshold"
@@ -277,6 +312,37 @@ explicit_combinations:
         max_depth: 3
         tree_method: "hist"
         learning_rate: 0.03
+        subsample: 0.8
+        colsample_bytree: 0.8
+        reg_alpha: 0.1
+        reg_lambda: 1.0
+
+  # Combo 5: Alpha-Tilted Inverse Volatility Portfolio with Return Hurdle & DD Exit
+  - universe: "nifty500_ddq"
+    rebalance_frequency: "monthly"
+    target_horizon: 21
+    drawdown_threshold: 0.20
+    min_train_days: 1260
+    selector:
+      pkg: "equity_strategy.selection.percentile"
+      cls: "PercentileSelector"
+      params: {percentile: 0.85, min_return: 0.0}
+    portfolio:
+      pkg: "equity_strategy.portfolio.inverse_volatility"
+      cls: "InverseVolatilityPortfolio"
+      params: {lookback: 63, min_obs: 40, cap_mult: 2.5, use_alpha_tilt: true}
+    risk_manager:
+      pkg: "equity_strategy.risk_management.fixed_percentage"
+      cls: "FixedPercentageRiskManager"
+      params: {max_deployment_pct: 0.85}
+    model:
+      pkg: "equity_strategy.models.xgboost_regressor"
+      cls: "XGBoostRegressor"
+      params:
+        n_estimators: 100
+        max_depth: 3
+        tree_method: "hist"
+        learning_rate: 0.05
         subsample: 0.8
         colsample_bytree: 0.8
         reg_alpha: 0.1

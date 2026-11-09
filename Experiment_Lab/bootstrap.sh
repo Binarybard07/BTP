@@ -4,7 +4,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16         # 16 CPU cores
-#SBATCH --mem=24gb                 # 24 GB memory limit
+#SBATCH --mem=32gb                 # 32 GB memory limit
 #SBATCH --time=2-00:00:00           # 2 days, 0 hours, 0 minutes, 0 seconds maximum
 #SBATCH --output=single_%j.log    # Slurm log file
 
