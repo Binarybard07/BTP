@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=btp_single
+#SBATCH --job-name=btp_grid16
 #SBATCH --partition=fat         # 'small', 'medium', 'large', 'fat' or 'test'
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16         # 16 CPU cores
-#SBATCH --mem=32gb                 # 32 GB memory limit
+#SBATCH --cpus-per-task=20         # 20 CPU cores (16 worker tasks + 4 orchestrator agents)
+#SBATCH --mem=64gb                 # 64 GB memory limit (prevents SLURM OOM kill on 16 parallel workers)
 #SBATCH --time=2-00:00:00           # 2 days, 0 hours, 0 minutes, 0 seconds maximum
 #SBATCH --output=single_%j.log    # Slurm log file
 
