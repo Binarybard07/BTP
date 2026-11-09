@@ -34,7 +34,6 @@ from qbeast_backtest.config import COST_PCT, INITIAL_CAPITAL, OUT_DIR, POINT_IN_
 from qbeast_backtest.engine import liquidity_slippage
 from qbeast_backtest.membership import Membership
 from qbeast_backtest.nautilus_backtest import VENUE, RegimeFeeModel, build_engine, index_instrument_symbol, make_equity
-from qbeast_exec.nautilus import make_bars
 from qbeast_backtest.nautilus_books import export_books
 from qbeast_backtest import config as C
 from qbeast_backtest import slippage_model as SM
@@ -52,10 +51,44 @@ _BLOCKED: list = []          # orders refused by the circuit gate
 _STAIR = None               # qbeast_exec.StaircaseFlag -> refuse BUYs in an operator ladder
 _INITIAL = None              # capital the mirror ledger starts from (defaults to config.INITIAL_CAPITAL)
 _MIRROR = None               # engine.Ledger shadowing the tax + cash-yield overlay -> see _equity()
+_MIRROR_DRIFT: list = []     # every fill the mirror could not apply as Nautilus booked it.
+                             # The mirror is a FOLLOWER: order quantities are computed against
+                             # Nautilus's net_position, so a flatten asks for exactly what
+                             # NAUTILUS holds. If the mirror holds less, the sell cannot be
+                             # applied as-is. Recorded here rather than raised, because
+                             # on_order_filled is a Nautilus event handler: a raise is logged
+                             # and SWALLOWED, which loses the fill and makes the drift grow.
+_OPENS = None                # the OPENS panel, so the mirror can be charged the price the overlay will
+                             # actually pay. Nautilus prices a fill at the PREVIOUS session's close
+                             # (the order went in on the index bar, before the day's stock bars), and
+                             # replay_fills corrects that to the fill-day open. Feeding the mirror the
+                             # raw fill price therefore had it budgeting at yesterday's close while the
+                             # reported ledger paid today's open - measured mean |gap| 1.01%, which is
+                             # what drove the overlay cash negative on 4-7% of sessions.
 _OVERLAY_SIZING = True       # False restores the legacy PRE-TAX sizing (kept only for A/B comparison)
 _BREAKER = None              # breaker.DrawdownBreaker for THIS run (config.DD_EXIT)
 _SIG_CLOSE = None            # signal-index closes, for the breaker's 'recover' re-entry
 _TREND_UP = None             # trend-gate series, for the breaker's 'gate' re-entry
+
+
+# RESTORED 2026-10-24. This wrapper was missing from this tree and `make_bars` was called at
+# two places below plus `NR.make_bars(...)` from stage3_execution/runner.py - a NameError and
+# an AttributeError, on every Nautilus run, for every strategy. That is the crash reported
+# against this folder; `--engine internal` was the only thing that worked because it never
+# builds bars. Backtest_Modular, Backtest_Core and Final_Paper_Trading_Strategies all have
+# it; the subsetting that produced this tree dropped it.
+def make_bars(inst, o, h, l, c, v, offset_ns=0):
+    """Daily bars for one instrument. DELEGATES to `qbeast_exec.nautilus.make_bars`.
+
+    This used to be a second, independent copy of the same builder - byte-for-byte equivalent in
+    behaviour, with nothing keeping it that way. The `offset_ns` convention it implements (0 for the
+    CLOCK instrument, 1 for every tradable, so an order submitted on the clock bar meets the day's own
+    tradable bar and fills at its OPEN) is the T -> T+1 contract, and the last time it silently broke it
+    was worth Rs 84,728 of return that did not exist. One implementation, in the shared library, read
+    by the backtest, the paper book and any live adapter.
+    """
+    from qbeast_exec.nautilus import make_bars as _make_bars
+    return _make_bars(inst, o, h, l, c, v, offset_ns=offset_ns)
 
 
 def precompute(*_a, **_k):
@@ -108,7 +141,32 @@ class RegimeExec(Strategy):
         signed = q if event.order_side == OrderSide.BUY else -q
         _FILLS.append(dict(ts=int(event.ts_event), symbol=sym, qty=signed, px=px, comm=comm))
         if _MIRROR is not None:                                  # keep the mirror on the same book
-            apply_fill(_MIRROR, pd.Timestamp(event.ts_event).normalize(), sym, int(signed), px, comm)
+            # AT THE PRICE THE OVERLAY WILL PAY, not the one Nautilus assigned. The mirror exists so
+            # that the equity the strategy SIZES from is the equity the replay REPORTS; charging it a
+            # stale close while replay_fills charges the fill-day open breaks exactly that. Falls back
+            # to the fill price when the open is unavailable, which is the old behaviour.
+            d = pd.Timestamp(event.ts_event).normalize()
+            mpx = px
+            if _OPENS is not None:
+                try:
+                    o = float(_OPENS.loc[d, sym])
+                    if o == o and o > 0:                         # o == o rejects NaN
+                        mpx = o
+                except (KeyError, IndexError, TypeError, ValueError):
+                    pass
+            # CLAMP A SELL THE MIRROR CANNOT COVER, and record it. This is what makes the
+            # mirror SELF-HEAL: after a flatten both ledgers sit at zero, so one lost share stops
+            # poisoning every later session. Raising here would lose the whole fill (Nautilus swallows
+            # handler exceptions) and guarantee the drift grows instead.
+            qty = int(signed)
+            if qty < 0:
+                held = int(_MIRROR.pos.get(sym.upper(), _MIRROR.pos.get(sym, 0)) or 0)
+                if -qty > held:
+                    _MIRROR_DRIFT.append(dict(date=d, symbol=sym, side="SELL", requested=-qty,
+                                              held=held, short_by=-qty - held))
+                    qty = -held
+            if qty:
+                apply_fill(_MIRROR, d, sym, qty, mpx, comm)
 
     def _prices(self) -> dict:
         """symbol -> last close seen. The newest price available at SUBMISSION time, which for a stock
@@ -223,7 +281,16 @@ class RegimeExec(Strategy):
         _COST = 3.0 * float(getattr(C, "COST_PCT", 0.0015))
         _GAP = float(getattr(C, "NAUTILUS_GAP_ALLOW", 0.01))
         _ALLOW = 1.0 + _COST + _GAP
+        # THE BUDGET IS AFTER-TAX CASH, NOT BROKER CASH. `balance_free` is the Nautilus account's,
+        # which is PRE-TAX: it still holds money the reported book has already paid to the tax office,
+        # so a guard measured against it passes orders the after-tax book cannot fund. `_equity()` was
+        # taught this (it takes min(mirror, broker)); this guard was not, which is why the overlay
+        # still went to -3.4% of NAV on tail gap days after the mirror and the overlay were reconciled.
+        # min() is safe in both directions for the same reason it is there: never past settled cash,
+        # never past after-tax wealth.
         budget = self.portfolio.account(VENUE).balance_free(INR).as_double()
+        if _OVERLAY_SIZING and _MIRROR is not None:
+            budget = min(budget, float(_MIRROR.cash))
         _unfunded = 0
 
         for sid, delta in orders:
@@ -296,6 +363,50 @@ def split_commission(sym: str, q: int, px: float, comm: float) -> tuple[float, f
                   f"reliable for this run; the TOTAL is unaffected.", flush=True)
         return float(comm), 0.0
     return charges, max(slip, 0.0)
+
+
+def mirror_drift_report() -> str:
+    """What the sizing mirror could not book as Nautilus did. Empty means the two agreed throughout.
+
+    Printed by the runner rather than returned quietly: a mirror that has drifted is a book that SIZED
+    against the wrong equity, and the resulting NAV is not wrong in any way a reader can see."""
+    if not _MIRROR_DRIFT:
+        return "  [mirror] no drift: every Nautilus fill applied to the sizing mirror exactly"
+    import pandas as _pd
+    d = _pd.DataFrame(_MIRROR_DRIFT)
+    tot = int(d["short_by"].sum())
+    lines = [f"  [mirror] ** {len(d)} fill(s) could not be applied as Nautilus booked them; "
+             f"{tot} share(s) short in total across {d['symbol'].nunique()} symbol(s) **",
+             "  [mirror]    the strategy SIZED against this mirror, so its equity was understated by "
+             "the value of those shares.",
+             "  [mirror]    worst offenders:"]
+    for _, r in d.nlargest(min(5, len(d)), "short_by").iterrows():
+        lines.append(f"  [mirror]      {str(r['date'])[:10]}  {r['symbol']:<12} wanted {r['requested']:>10,} "
+                     f"held {r['held']:>10,}  short {r['short_by']:>8,}")
+    return "\n".join(lines)
+
+
+def reconcile_mirror(engine) -> list:
+    """Compare the sizing mirror's positions against NAUTILUS's, after the run. Returns the mismatches.
+
+    This check existed in none of the four trees, which is why a one-share divergence could only be
+    found by reading a swallowed traceback out of a log."""
+    if _MIRROR is None or engine is None:
+        return []
+    live = {}
+    try:
+        for p in engine.cache.positions():
+            live[p.instrument_id.symbol.value.upper()] = live.get(
+                p.instrument_id.symbol.value.upper(), 0) + int(p.signed_qty)
+    except Exception:                                  # noqa: BLE001 - a check must not break a run
+        return []
+    mir = {str(k).upper(): int(v) for k, v in (_MIRROR.pos or {}).items() if v}
+    out = []
+    for sym in sorted(set(live) | set(mir)):
+        a, b = int(live.get(sym, 0)), int(mir.get(sym, 0))
+        if a != b:
+            out.append(dict(symbol=sym, nautilus=a, mirror=b, diff=b - a))
+    return out
 
 
 def apply_fill(led, t, sym: str, q: int, px: float, comm: float) -> None:
@@ -399,7 +510,7 @@ def execute_targets(targets, cal, opens, closes, index_close, slip, initial, lab
 
     `slip` is the per-symbol rate map, added on top of the shared charge schedule by the fee model.
     `label` (e.g. "paper") names the exported order/trade books; None skips the export."""
-    global _TARGETS, _REBAL_DATES, _FILLS, _ORDER_DATE, _INDEX_ID, _BANDS, _INITIAL
+    global _TARGETS, _REBAL_DATES, _FILLS, _ORDER_DATE, _INDEX_ID, _BANDS, _INITIAL, _OPENS
     from qbeast_backtest.nautilus_backtest import RegimeFeeModel, build_engine, index_instrument_symbol, make_equity
 
     syms = sorted(set().union(*[set(v) for v in targets.values()])) if targets else []
@@ -408,6 +519,7 @@ def execute_targets(targets, cal, opens, closes, index_close, slip, initial, lab
     _TARGETS, _REBAL_DATES, _FILLS, _ORDER_DATE = targets, {d.date() for d in targets}, [], {}
     _BANDS = bands
     _INITIAL = float(initial)          # the mirror must start from THIS book's capital
+    _OPENS = opens   # price the mirror at the open, like replay_fills
 
     engine = build_engine(int(initial), fee_model=RegimeFeeModel(None, dict(slip or {})))
     idx = make_equity(index_instrument_symbol()); _INDEX_ID = idx.id
@@ -426,6 +538,15 @@ def execute_targets(targets, cal, opens, closes, index_close, slip, initial, lab
                                   closes[s].reindex(cal), v, offset_ns=1))      # stocks AFTER the index bar
     engine.add_strategy(RegimeExec(config=StrategyConfig()))
     engine.run()
+    # THE MIRROR RECONCILIATION. The sizing mirror follows Nautilus's fills; if it has drifted, the
+    # strategy sized against the wrong equity and no reported number says so. Printed every run -
+    # including the clean case, because "no drift" is what makes a later non-zero line visible.
+    print(mirror_drift_report(), flush=True)
+    _mm = reconcile_mirror(engine)
+    if _mm:
+        print(f"  [mirror] ** {len(_mm)} position(s) disagree with Nautilus at the end of the run: "
+              + ", ".join(f"{m['symbol']} nautilus={m['nautilus']:,} mirror={m['mirror']:,}"
+                          for m in _mm[:5]) + " **", flush=True)
     if label:
         from qbeast_backtest.nautilus_books import export_books
         export_books(engine, label, OUT_DIR, order_dates=_ORDER_DATE, opens=opens)
