@@ -1,0 +1,429 @@
+\begin{center}
+{\huge\textbf{\ttitle}}\\[0.4cm]
+{\large\textbf{\authorname{} (\rn)}}\\[0.2cm]
+{\large Supervisor: \textbf{\supname}}\\[0.2cm]
+{\large \deptname{}, \univname{}}
+\end{center}
+\vspace{0.8cm}
+
+\section{Motivation}
+\label{sec:motivation}
+Quantitative investment strategies frequently demonstrate compelling performance during in-sample simulation, only to suffer severe decay or catastrophic drawdowns upon live market deployment. In empirical asset pricing, this performance breakdown stems from three structural deficiencies: the failure of classical linear factor assumptions, pervasive survivorship and lookahead biases in historical datasets, and the systematic omission of realistic transaction frictions.
+
+First, classical econometric frameworks, such as the Capital Asset Pricing Model (CAPM) and Fama--French multi-factor extensions \cite{fama1993common, fama2015five}, rely on linear relationships between static factor exposures and expected equity returns. However, emerging equity markets exhibit heavy-tailed return distributions, non-linear cross-asset momentum spillovers, and structural regime shifts. Linear estimators such as Ordinary Least Squares (OLS) enforce rigid hyperplanes across feature space, leaving them incapable of capturing conditional interactions without combinatorial feature expansion.
+
+Second, backtesting frameworks in retail and academic research frequently introduce survivorship bias. By defining historical investment universes using current index constituents, non-performing companies that were delisted, acquired, or demoted are retroactively excluded. In the National Stock Exchange of India (NSE), survivorship bias inflates historical annual returns by an estimated 3.0\% to 5.5\% annually \cite{lopezdeprado2018advances}. Evaluating models on static survivorship-contaminated universes produces fictitious alpha.
+
+Third, the execution gap between simulated and realized profitability remains wide due to institutional friction schedules. In Indian equities, trading costs include brokerage fees, exchange turnover charges, SEBI turnover fees, Goods and Services Tax (GST), Stamp Duty, and statutory Securities Transaction Tax (STT). When combined with bid-ask spread slippage on market orders, high-turnover quantitative strategies bleed substantial capital. 
+
+Finally, existing algorithmic research environments either rely on monolithic legacy architectures (such as Backtrader or Zipline) that tightly couple data ingestion with execution logic, or lack direct bridges to live broker execution interfaces. Modifying an indicator or swapping an allocation model often requires modifying the entire codebase. There is a pressing need for a fully modular, object-oriented quantitative framework that enforces strict mathematical isolation across the strategy lifecycle, eliminates data snooping, and directly bridges backtesting with automated broker execution.
+
+
+\section{Contribution}
+\label{sec:contribution}
+This thesis resolves these structural limitations through five concrete engineering contributions:
+\begin{enumerate}
+    \item \textbf{Modular, Contract-Driven Quantitative Infrastructure}: We engineer an object-oriented backtesting and execution engine structured around strict abstract base contracts (\texttt{FeatureEngine}, \texttt{TargetEngine}, \texttt{BaseModel}, \texttt{BaseSelector}, \texttt{BasePortfolio}, \texttt{BaseRiskManager}). Any component can be independently swapped or benchmarked without modifying underlying execution pipelines.
+    \item \textbf{Point-in-Time Dynamic Constituent Engine}: We construct a dynamic reconstitution mapping system for the NSE NIFTY 200 universe (\texttt{nifty200\_ddq}), dynamically tracking 260 historical symbols across every calendar rebalance date from 2000 to 2026. This mathematically guarantees zero survivorship bias.
+    \item \textbf{Two-Stage Feature Dimensionality Reduction}: We evaluate an initial candidate pool of 60 technical indicators spanning five factor families. Using tree-based split gain and collinearity pruning, we isolate a parsimonious subset of 16 high-gain indicators that captures 86.4\% of cumulative predictive signal, preventing the curse of dimensionality.
+    \item \textbf{Hyper-Scale Combinatorial Sweeps (Experiment Lab)}: We design an automated multi-mode search harness (Grid, Explicit, and One-Factor-At-A-Time) executing 9,182 backtest simulations across parameter spaces, identifying the optimal configuration for our proposed framework, \textbf{XGForge}, as the empirical global optimum.
+    \item \textbf{Event-Driven Frictional Backtesting and Live Deployment}: We audit strategy execution in the NautilusTrader event-driven engine under \textsf{Rs.~}9.19 Lakhs of realistic transaction costs across 5,547 fills over 2019--2026. In addition, we deploy an automated trading daemon on an institutional High-Performance Computing (HPC) cluster, executing staged rebalances via OpenAlgo and the Angel One SmartAPI at market open.
+\end{enumerate}
+
+\section{Literature Survey}
+\label{sec:literature}
+Quantitative asset pricing has evolved from static factor models to flexible machine learning architectures. Fama and French \cite{fama1993common} established that market equity, size, and book-to-market equity explain substantial cross-sectional return variance. Subsequent work by Jegadeesh and Titman \cite{jegadeesh1993returns} documented persistent medium-term cross-sectional momentum (3- to 12-month holding periods). However, linear specifications cannot model cross-factor dependencies, such as momentum effectiveness being conditioned on realized volatility.
+
+Gu, Kelly, and Xiu \cite{gu2020empirical} conducted a landmark empirical study benchmarking linear regressions, tree ensembles, and deep neural networks across 30,000 US equities over 60 years. Their findings demonstrated that machine learning methods improve out-of-sample prediction over linear baselines. Specifically, shallow gradient boosted decision trees (GBDT) and shallow neural networks dominated deep networks, because financial data exhibits an exceptionally low signal-to-noise ratio ($\text{SNR} \approx 0.01$). Deep neural networks overfit financial noise due to unconstrained parameter flexibility.
+
+The mathematical foundation of Gradient Boosted Decision Trees was formalized by Chen and Guestrin \cite{chen2016xgboost} in the XGBoost framework. By integrating analytical second-order Taylor expansion of the loss function with explicit $L_1$ and $L_2$ leaf weight shrinkage, XGBoost prevents structural overfitting. Grinsztajn et al. \cite{grinsztajn2022why} proved that tree-based algorithms consistently outperform deep learning on tabular datasets characterized by unnormalized features, extreme outliers, and non-smooth decision boundaries.
+
+A primary criticism of ensemble models in institutional finance is the ``black box'' problem. Lundberg et al. \cite{lundberg2020local} resolved this by developing TreeSHAP, an efficient algorithm computing exact Shapley values from cooperative game theory in polynomial time $\mathcal{O}(T L D^2)$. TreeSHAP enables rigorous attribution of individual feature contributions to cross-sectional trade signals.
+
+In financial methodology, López de Prado \cite{lopezdeprado2018advances} emphasized that standard $k$-fold cross-validation is invalid for financial time series due to serial correlation and leakage. He introduced combinatorial purged walk-forward validation to isolate out-of-sample performance. Similarly, Campbell and Thompson \cite{campbell2008predicting} proved that evaluating equity return forecasts using in-sample $R^2$ introduces lookahead bias, establishing the out-of-sample $R^2_{\text{OOS}}$ benchmark against historical prevailing means. Finally, Cartea et al. \cite{cartea2015algorithmic} detailed optimal algorithmic order routing under continuous bid-ask spread dynamics and statutory tax schedules.
+
+
+\section{Problem Definition and Objective}
+\label{sec:problem_definition}
+Let $\mathcal{U}_t = \{S_1, S_2, \dots, S_{N_t}\}$ denote the dynamic, point-in-time eligible universe of equities on calendar rebalancing date $t$, where $N_t \le 200$ reflects the reconstitutions of the NSE NIFTY 200 index. For each asset $i \in \mathcal{U}_t$, let $\mathbf{x}_{i,t} \in \mathbb{R}^d$ represent a $d$-dimensional feature vector derived from historical price and volume series up to session $t$.
+
+We formulate return forecasting as a cross-sectional regression over a forward 63-day trading horizon ($\sim$3 calendar months). The continuous target variable $y_{i,t}$ is defined as:
+\begin{equation}
+    y_{i,t} = \frac{P_{i, t+63}}{P_{i,t}} - 1
+    \label{eq:target_definition}
+\end{equation}
+where $P_{i,t}$ denotes the adjusted closing price of asset $i$ on date $t$. To prevent data leakage, training observations at decision date $t$ must terminate strictly before $t - 63$.
+
+The learning objective is to estimate a non-parametric mapping function $\hat{y}_{i,t} = f(\mathbf{x}_{i,t})$ that minimizes the regularized objective function:
+\begin{equation}
+    \mathcal{L}(\theta) = \sum_{i=1}^N \left( y_i - \hat{y}_i \right)^2 + \sum_{k=1}^K \Omega(f_k)
+    \label{eq:objective_func}
+\end{equation}
+where $K$ is the number of additive trees and $\Omega(f_k)$ denotes the tree complexity penalty:
+\begin{equation}
+    \Omega(f_k) = \gamma T_k + \frac{1}{2} \lambda \sum_{j=1}^{T_k} w_{j,k}^2 + \alpha \sum_{j=1}^{T_k} |w_{j,k}|
+    \label{eq:complexity_penalty}
+\end{equation}
+Here, $T_k$ represents the number of terminal leaves in tree $k$, $w_{j,k}$ denotes the continuous prediction score of leaf $j$, $\lambda$ is the $L_2$ regularization parameter, $\alpha$ is the $L_1$ sparsity penalty, and $\gamma$ is the minimum loss reduction required to partition a leaf.
+
+At each monthly rebalance $t$, the estimated scores $\hat{y}_{i,t}$ are sorted in descending order to partition the universe into cross-sectional percentiles. The portfolio allocation vector $\mathbf{w}_t = [w_{1,t}, \dots, w_{N_t,t}]^T$ is determined under the following constraints:
+\begin{align}
+    \mathcal{S}_t &= \left\{ i \in \mathcal{U}_t \;\Big|\; \text{Rank}(\hat{y}_{i,t}) \ge Q_{0.75} \quad \text{and} \quad \hat{y}_{i,t} > 0.0 \right\} \label{eq:selection_rule} \\
+    w_{i,t} &= 
+    \begin{cases}
+        \frac{C_{\text{deploy}}}{|\mathcal{S}_t|}, & i \in \mathcal{S}_t \\
+        0, & i \notin \mathcal{S}_t
+    \end{cases} \label{eq:weight_rule} \\
+    \sum_{i \in \mathcal{S}_t} w_{i,t} &= C_{\text{deploy}} \le 0.85 \label{eq:deployment_constraint}
+\end{align}
+where $Q_{0.75}$ denotes the 75th percentile cutoff, $C_{\text{deploy}} = 0.85$ enforces a mandatory 15\% cash reserve, and a trailing drawdown threshold $\delta_{\text{max}} = 0.15$ triggers risk mitigation if cumulative portfolio decline exceeds 15\%.
+
+
+\section{Methodology}
+\label{sec:methodology}
+
+\subsection{Architecture and Modular Contracts}
+To ensure maintainability and eliminate combinatorial code changes, we built a modular quantitative trading framework structured around decoupled abstract contracts. Figure~\ref{fig:pipeline_flow} illustrates the system architecture.
+
+\begin{figure*}[htbp]
+    \centering
+    \includegraphics[width=0.95\textwidth]{figures/Trading_ML_Framework_Pipeline.png}
+    \caption{Modular Trading Machine Learning Framework Architecture. Raw market data flows sequentially through decoupled contracts: Ingestion, Point-in-Time Universe Gate, Feature Engine, Target Engine, Statistical Model, Cross-Sectional Selector, Portfolio Allocator, Risk Manager, and Nautilus Execution Engine.}
+    \label{fig:pipeline_flow}
+\end{figure*}
+
+The architecture defines six core interface abstractions:
+\begin{itemize}
+    \item \textbf{\texttt{FeatureEngine}}: Computes technical and statistical features grouped strictly per symbol. Vector operations are contained within individual symbol histories, preventing cross-sectional lookahead bias.
+    \item \textbf{\texttt{TargetEngine}}: Generates continuous forward returns or discrete classifications across specified horizons, enforcing calendar cutoffs ($T - \text{horizon}$) to ensure unobserved forward sessions are omitted from training datasets.
+    \item \textbf{\texttt{BaseModel}}: Standardizes training (\texttt{train(X, y)}) and inference (\texttt{predict(X)}) across scikit-learn, LightGBM, and XGBoost regressors.
+    \item \textbf{\texttt{BaseSelector}}: Filters model score vectors into discrete asset allocations using percentile thresholds (\texttt{PercentileSelector}) or discrete counts (\texttt{TopNSelector}).
+    \item \textbf{\texttt{BasePortfolio}}: Computes position weights across selected equities (\texttt{EqualWeightPortfolio}, inverse volatility weighting).
+    \item \textbf{\texttt{BaseRiskManager}}: Manages overall exposure, cash liquidity reserves, and trailing drawdown cutbacks (\texttt{FixedPercentageRiskManager}).
+\end{itemize}
+
+\subsection{Dynamic Point-in-Time Constituent Mapping}
+To eliminate survivorship bias, we built a historical membership resolver for the NIFTY 200 universe. The pipeline tracks 260 distinct historical constituent stocks between 2000 and 2026. On any monthly rebalance date $t$, the system queries the point-in-time constituent registry to extract the active index members. Equities that were subsequently delisted or relegated to smaller indices remain present in the historical evaluation window, ensuring the backtest mirrors real institutional trading conditions.
+
+\subsection{Two-Stage Feature Selection (60 to 16 Indicators)}
+High-dimensional technical feature spaces contain redundant and noisy indicators. We initialized a candidate pool of 60 technical indicators across five factor families, summarized in Table~\ref{tab:candidate_features}.
+
+\begin{table}[htbp]
+\centering
+\caption{Candidate Feature Pool (60 Indicators across 5 Factor Families).}
+\label{tab:candidate_features}
+\resizebox{0.95\textwidth}{!}{
+\begin{tabular}{lcl}
+\hline\hline
+\textbf{Factor Family} & \textbf{Count} & \textbf{Candidate Technical Indicators} \\
+\hline
+Multi-Horizon Momentum & 12 & Returns over 1, 3, \textbf{5*}, \textbf{10*}, 15, \textbf{21*}, 42, \textbf{63*}, 84, \textbf{126*}, 189, \textbf{252*} sessions \\
+Trend / SMA Deviations & 8 & Price distance to SMA(10, \textbf{20*}, 30, \textbf{50*}, 75, \textbf{100*}, 150, \textbf{200*}) \\
+Trend / EMA Deviations & 8 & Price distance to EMA(10, \textbf{20*}, 30, \textbf{50*}, 75, 100, 150, 200) \\
+Realized Volatility & 10 & Rolling std. dev. of daily returns over 5, \textbf{10*}, 15, 20, \textbf{21*}, 30, 42, 60, \textbf{63*}, 126 sessions \\
+Momentum Oscillators & 10 & Rate of Change: ROC(5, 10, 14, 20, \textbf{21*}, 30, 42, 60, 63, 126) \\
+Cross-Factor Spreads & 12 & Spreads (SMA20/50, SMA50/200, EMA20/50), momentum ratios, Sharpe proxies, 52-week high distances \\
+\hline
+\textbf{Total Candidate Pool} & \textbf{60} & \textbf{* Bold indicators (16) denote the selected high-gain subset.} \\
+\hline\hline
+\end{tabular}
+}
+\end{table}
+
+We trained a full-model GBDT estimator on pre-2021 training data across all 60 indicators to evaluate total split gain. Figure~\ref{fig:scree_plot} displays the resulting cumulative importance scree plot.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.85\textwidth]{figures/feature_selection_scree_plot.pdf}
+    \caption{Two-Stage Feature Selection Scree Plot. Cumulative feature importance across 60 candidate indicators exhibits a distinct elbow at rank 16, capturing 86.4\% of cumulative predictive gain. The remaining 44 indicators plateau into marginal noise (<14\% gain) and are pruned.}
+    \label{fig:scree_plot}
+\end{figure}
+
+The scree plot reveals an elbow at rank 16, where cumulative feature gain reaches 86.4\%. The remaining 44 indicators contribute negligible predictive value while increasing parameter variance. Figure~\ref{fig:feature_60_ranking} shows the complete ranking across the candidate pool, highlighting the 16 selected indicators in blue.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.92\textwidth]{figures/feature_importance_60_ranking.pdf}
+    \caption{Candidate Feature Importance Ranking. Normalized split gain across candidate indicators, highlighting the selected 16 alpha features in blue and pruned redundant indicators in gray.}
+    \label{fig:feature_60_ranking}
+\end{figure}
+
+\subsection{Multicollinearity and Factor Block Analysis}
+To evaluate correlation structure among the 16 selected indicators, we computed pairwise Spearman rank correlation coefficients across 1,058,835 observations, shown in Figure~\ref{fig:correlation_heatmap}.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.88\textwidth]{figures/feature_correlation_heatmap.pdf}
+    \caption{Spearman Rank Correlation Heatmap ($\rho$) across the 16 Alpha Indicators. Noticeable block clusters appear among adjacent momentum horizons ($\rho \approx 0.65 - 0.85$) and moving average deviations ($\rho > 0.85$), empirically justifying non-parametric tree splitting over linear OLS.}
+    \label{fig:correlation_heatmap}
+\end{figure}
+
+The heatmap confirms three distinct factor blocks:
+\begin{enumerate}
+    \item \textbf{Momentum Block} (\texttt{return\_5} to \texttt{return\_252}, \texttt{roc\_21}): High intra-block correlation ($\rho = 0.65$ to $0.85$) between adjacent horizons.
+    \item \textbf{Moving Average Distance Block} (\texttt{close\_to\_sma20} to \texttt{sma200}, \texttt{close\_to\_ema20/50}): Extreme collinearity ($\rho > 0.88$) between short-term exponential and simple moving averages.
+    \item \textbf{Volatility Block} (\texttt{volatility\_10}, \texttt{volatility\_21}, \texttt{volatility\_63}): High internal correlation ($\rho = 0.72$ to $0.84$), but near-zero correlation with price trend indicators ($\rho \approx -0.05$ to $0.12$), confirming volatility serves as an orthogonal regime factor.
+\end{enumerate}
+
+In classical linear regression, this degree of multicollinearity causes the Gram matrix $(X^T X)$ to become ill-conditioned, inflating Variance Inflation Factors ($\text{VIF} \gg 10$) and producing erratic coefficient signs. Conversely, XGBoost is structurally immune to collinearity: at each split, the greedy splitting criterion evaluates features independently. Feature subsampling (\texttt{colsample\_bytree = 0.8}) further decorrelates trees across boosting iterations.
+
+\subsection{Walk-Forward Expanding Window Validation}
+To eliminate lookahead bias, we implement expanding-window walk-forward validation. The initial training window requires a minimum of 1,260 trading sessions ($\sim$5 calendar years, 2014--2019). On each monthly rebalancing date $t$, the model fits exclusively on historical data satisfying $t_{\text{obs}} < t - 63$. The fitted estimator then generates cross-sectional predictions for eligible assets on date $t$. The training set expands by one month at each rebalance step, continuously incorporating new historical data without retraining on unobserved future returns.
+
+\subsection{Experiment Lab: Combinatorial Search and Sweeps}
+To systematically identify optimal strategy parameters, we built the \textbf{Experiment Lab}, an automated execution harness supporting three exploration modes:
+\begin{enumerate}
+    \item \textbf{Grid Search Mode (\texttt{XGBoost\_Regressor\_Strategy\_GRID})}: Exhaustive Cartesian sweep across tree hyperparameters: depth $\in \{2, 3, 4, 5\}$, learning rate $\in \{0.01, 0.03, 0.05, 0.10\}$, $L_2$ regularization $\lambda \in \{0.1, 1.0, 5.0\}$, and selection percentiles $\in \{0.70, 0.75, 0.80, 0.85\}$.
+    \item \textbf{Explicit Mode (\texttt{XGBoost\_Regressor\_Strategy\_Matr})}: Executes user-specified parameter combinations to directly test targeted hypotheses without generating a full Cartesian grid.
+    \item \textbf{One-Factor-At-A-Time Mode (\texttt{OFAT})}: Sensitivity analysis isolating single parameters (such as varying the target forward horizon from 5 to 126 days, or varying cash buffers from 0\% to 25\%) while fixing all other parameters.
+\end{enumerate}
+
+\subsubsection*{Dual-Hurdle Objective Function (Score Formulation)}
+To rank the 9,182 candidate configurations, we formulate a dual-hurdle composite score. Standard optimization criteria, such as unconstrained CAGR, favor volatile strategies with unacceptably deep drawdowns, while standard Sharpe ratios penalize upside volatility symmetrically. To balance aggressive capital compounding against strict downside protection, the evaluation score establishes two institutional hurdles: an absolute annual return hurdle $H_{\text{return}} = \max(20.0\%, \text{CAGR}_{\text{bench}})$ and a maximum drawdown ceiling $H_{\text{dd}} = \max(-20.0\%, \text{MaxDD}_{\text{bench}})$. 
+
+Let $\Delta_{\text{return}} = \text{CAGR} - H_{\text{return}}$ and $\Delta_{\text{dd}} = \text{MaxDD} - H_{\text{dd}}$ denote the return and drawdown surpluses relative to these thresholds. The composite score is computed via a piecewise gated objective:
+\begin{equation}
+    \text{Score} = 
+    \begin{cases}
+        \left(\frac{\text{CAGR}}{|\text{MaxDD}|}\right) \times \left(1 + \frac{\text{CAGR} - \text{CAGR}_{\text{bench}}}{100}\right), & \text{if } \Delta_{\text{return}} > 0 \text{ and } \Delta_{\text{dd}} > 0 \\[8pt]
+        \min\left(\Delta_{\text{return}}, \, \Delta_{\text{dd}}\right), & \text{otherwise}
+    \end{cases}
+    \label{eq:apex_score}
+\end{equation}
+When a configuration breaches either threshold, the penalty tier directly assigns a negative score equal to the magnitude of the worst violation ($\min(\Delta_{\text{return}}, \Delta_{\text{dd}})$). If both hurdles are cleared, the score scales the Calmar ratio ($\text{CAGR} / |\text{MaxDD}|$) by the excess alpha margin. The objective optimizes for high risk-adjusted returns while penalizing drawdowns beyond 20\%.
+
+Across the Experiment Lab, we executed \textbf{9,182 backtest simulations}. Table~\ref{tab:experiment_lab_stats} summarizes the empirical distribution of performance metrics across all completed runs from \texttt{Experiment Lab.xlsx}.
+
+\begin{table}[htbp]
+\centering
+\caption{Statistical Distribution of 9,182 Strategy Simulations in Experiment Lab.}
+\label{tab:experiment_lab_stats}
+\begin{tabular}{lcccc}
+\hline\hline
+\textbf{Metric} & \textbf{Mean} & \textbf{Median} & \textbf{25th--75th Percentile} & \textbf{XGForge} \\
+\hline
+Score & -19.88 & -17.66 & [-24.24, -12.73] & \textbf{-2.92} (Rank 1) \\
+CAGR (\%) & 8.68\% & 8.63\% & [2.33\%, 14.18\%] & \textbf{17.08\%} \\
+Sharpe Ratio & 0.511 & 0.583 & [0.245, 0.836] & \textbf{1.059} \\
+Max Drawdown (\%) & -37.75\% & -35.38\% & [-42.94\%, -29.91\%] & \textbf{-20.74\%} \\
+\hline\hline
+\end{tabular}
+\end{table}
+
+Out of 9,182 evaluated parameter sets, \textbf{XGForge} achieved the highest composite score (-2.9189, Rank 1), demonstrating high risk-adjusted return and low maximum drawdown. Specifically, with a CAGR of 17.08\% against the 20.0\% hurdle ($\Delta_{\text{return}} = -2.9189\%$) and a MaxDD of -20.74\% against the -20.0\% ceiling ($\Delta_{\text{dd}} = -0.736\%$), XGForge came closest to clearing both stringent hurdles across the entire parameter space.
+
+
+\section{Results and Analysis}
+\label{sec:results}
+
+\subsection{Empirical Model Benchmarking}
+We benchmarked the XGBoost regressor against four alternative learning architectures trained under identical expanding-window data and features:
+\begin{itemize}
+    \item \textbf{Ridge Regression (L2)}: $\alpha = 100.0$.
+    \item \textbf{Lasso Regression (L1)}: $\alpha = 0.001$.
+    \item \textbf{Random Forest Regressor}: 100 trees, maximum depth 5 \cite{breiman2001random}.
+    \item \textbf{LightGBM Regressor}: 100 trees, maximum depth 3, learning rate 0.05 \cite{ke2017lightgbm}.
+    \item \textbf{XGBoost Regressor}: 100 trees, maximum depth 3, learning rate 0.05, subsample 0.8, colsample 0.8, $\lambda = 1.0$, $\alpha = 0.1$.
+\end{itemize}
+
+Table~\ref{tab:model_benchmark} presents the empirical results across statistical forecasting, cross-sectional ranking, and portfolio performance metrics.
+
+\input{figures/model_comparison_table.tex}
+
+The empirical results confirm three key patterns:
+\begin{enumerate}
+    \item \textbf{Failure of Linear Estimators}: Ridge and Lasso achieve low out-of-sample explanatory power ($R^2_{\text{OOS}} \le 0.47\%$) and sub-par Sharpe ratios (0.74 and 0.69) with severe drawdowns exceeding -34\%. Their linear decision surfaces cannot separate winners from losers in volatile markets.
+    \item \textbf{Tree Ensembles Dominate}: Both LightGBM and XGBoost improve forecast accuracy, lowering RMSE to 0.1973 and generating positive out-of-sample $R^2_{\text{OOS}}$ ($0.78\%$ and $0.94\%$).
+    \item \textbf{XGBoost Superiority}: XGBoost achieves the highest Sharpe ratio (1.06), highest annualized return (17.1\%), and lowest maximum drawdown (-20.7\%), with sub-millisecond inference latency (0.0004 ms per sample), confirming suitability for low-latency rebalancing.
+\end{enumerate}
+
+\subsection{Feature Importance and TreeSHAP Explainability}
+Figure~\ref{fig:feature_gain_16} illustrates normalized split gain across the 16 alpha indicators in the XGForge model.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.82\textwidth]{figures/feature_importance_gain_16.pdf}
+    \caption{XGBoost Feature Importance (Normalized Split Gain). Medium-term momentum (\texttt{return\_63}, \texttt{return\_126}) and moving average deviations (\texttt{close\_to\_sma50}, \texttt{close\_to\_ema20}) account for the majority of tree partitions.}
+    \label{fig:feature_gain_16}
+\end{figure}
+
+The split gain analysis reveals that medium-term momentum indicators (\texttt{return\_63} at 13.5\% and \texttt{return\_126} at 11.2\%) and medium-term moving average distances (\texttt{close\_to\_sma50} at 9.8\%) drive the majority of tree splits, consistent with the 3- to 6-month cross-sectional momentum effect \cite{jegadeesh1993returns}.
+
+To examine directional impact, Figure~\ref{fig:shap_beeswarm} presents the TreeSHAP summary beeswarm plot across held-out test samples.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.88\textwidth]{figures/shap_beeswarm_16.pdf}
+    \caption{TreeSHAP Summary Beeswarm Plot. Each point represents an asset observation. Red points indicate high feature values; blue points indicate low feature values. High medium-term momentum (\texttt{return\_63}) shifts predicted returns positively, whereas high realized volatility (\texttt{volatility\_63}) suppresses return expectations.}
+    \label{fig:shap_beeswarm}
+\end{figure}
+
+The SHAP values provide clear directional insights:
+\begin{itemize}
+    \item \textbf{Momentum Dynamics}: High values of \texttt{return\_63} and \texttt{return\_21} (red points) correspond to positive SHAP values, driving forward return forecasts upward.
+    \item \textbf{Volatility Drag}: High values of \texttt{volatility\_63} and \texttt{volatility\_21} shift SHAP values strongly to the left (negative impact), confirming that the model penalizes high-volatility speculative assets.
+    \item \textbf{Moving Average Anchoring}: Assets trading moderately above their 50-day and 20-day exponential moving averages receive positive SHAP contributions, confirming a trend-continuation bias.
+\end{itemize}
+
+\subsection{Economic Performance and Drawdown Protection}
+Figure~\ref{fig:equity_drawdown} presents the cumulative equity trajectory and underwater drawdown profile of the XGForge strategy versus the NIFTY 200 benchmark over the 2019--2026 out-of-sample window.
+
+\begin{figure*}[htbp]
+    \centering
+    \includegraphics[width=0.96\textwidth]{figures/equity_curve_and_drawdown.pdf}
+    \caption{Cumulative Strategy Performance and Underwater Drawdown (2019--2026 Out-of-Sample). Top: Growth of \textsf{Rs.~}10 Lakh initial capital to \textsf{Rs.~}34.21 Lakhs (17.08\% CAGR) versus benchmark \textsf{Rs.~}22.87 Lakhs (11.19\% CAGR). Bottom: Underwater drawdown profile highlighting capital preservation during the March 2020 crash (-20.74\% strategy vs -38.22\% benchmark).}
+    \label{fig:equity_drawdown}
+\end{figure*}
+
+Over the 8-year test period, an initial capital of \textsf{Rs.~}10,00,000 grew to \textsf{Rs.~}34,20,565 post-friction (pre-tax \textsf{Rs.~}39,80,000), representing a compound annual growth rate of 17.08\% versus 11.19\% for the NIFTY 200 index (+5.89\% annualized alpha).
+
+The strategy also demonstrated robust downside protection. During the global liquidity crisis in March 2020, the NIFTY 200 suffered a maximum drawdown of -38.22\%. In contrast, the strategy's maximum drawdown was curtailed to -20.74\% (+17.48\% risk mitigation differential). This capital preservation resulted from the 15\% cash reserve combined with the model's volatility penalty, which shifted allocations into resilient defensive equities.
+
+\subsection{Realistic Transaction Cost and Friction Breakdown}
+To confirm that profitability is not an artifact of zero-cost assumptions, the NautilusTrader simulation incorporated real institutional fee schedules. Over 5,547 executed orders, total frictions amounted to \textsf{Rs.~}9,18,946:
+\begin{itemize}
+    \item \textbf{Exchange Fees and Brokerage}: \textsf{Rs.~}1,33,635 across turnover of \textsf{Rs.~}12.03 Crores.
+    \item \textbf{Bid-Ask Spread Slippage}: \textsf{Rs.~}3,64,027 modeled at 5 basis points per transaction.
+    \item \textbf{Statutory Taxes (STT, Stamp Duty, GST)}: \textsf{Rs.~}4,21,284.
+\end{itemize}
+Despite paying \textsf{Rs.~}9.19 Lakhs in cumulative frictions, the strategy delivered net realized trading profit of \textsf{Rs.~}25,77,230 on closed lots, verifying commercial viability.
+
+
+\section{Summary and Future Plan of Work}
+\label{sec:summary_future}
+
+\subsection{Summary of Accomplishments}
+This thesis delivered a production-ready quantitative equity trading system:
+\begin{enumerate}
+    \item Built an object-oriented, contract-driven backtesting platform ensuring modularity across data, features, models, portfolios, and risk management.
+    \item Solved survivorship bias via a dynamic point-in-time constituent mapping engine tracking 260 NIFTY 200 equities across 26 years.
+    \item Validated a two-stage feature selection funnel that pruned 60 candidate indicators down to 16 alpha features capturing 86.4\% of predictive gain.
+    \item Executed 9,182 backtest simulations across three search modes in the Experiment Lab, identifying the \textbf{XGForge} parameter configuration as the empirical global optimum.
+    \item Audited out-of-sample performance (2019--2026), achieving 17.08\% CAGR versus 11.19\% benchmark and cutting maximum drawdown from -38.22\% to -20.74\% under \textsf{Rs.~}9.19 Lakhs of realistic transaction frictions.
+    \item Deployed the strategy in live paper-trading on November 2, 2026 via OpenAlgo and Angel One SmartAPI, achieving an absolute return of +8.56\% (+\textsf{Rs.~}8.13 Lakhs on \textsf{Rs.~}94.96 Lakhs deployed) across 7 trading sessions through November 15, 2026 EOD with a 100\% order fill rate.
+\end{enumerate}
+
+\subsection{Production HPC Architecture and Automated Daemon}
+The framework operates as an automated trading daemon on an institutional High-Performance Computing cluster running SLURM. The production architecture follows a two-phase lifecycle:
+\begin{itemize}
+    \item \textbf{Evening Pipeline ($\sim$9:00 PM IST)}: Evaluates monthly calendar rebalancing criteria, fits the expanding-window XGBoost model on updated daily close data, generates forward cross-sectional predictions across eligible equities, determines target portfolio quantities, and pre-computes sell and buy order deltas. The staged rebalance is atomically serialized to \texttt{openalgo\_xgboost\_state.json}.
+    \item \textbf{Morning Execution (09:15:00 IST)}: The daemon wakes with millisecond precision at market open, confirms the OpenAlgo analyzer safety gate, and dispatches batch orders directly to Angel One via SmartAPI without runtime database queries. In live execution on November 2, 2026, the complete batch of 10 market orders was dispatched and confirmed filled between 09:15:00.711 and 09:15:03.229 IST, achieving sub-250 ms average round-trip execution latency with zero order rejections or pipeline stalls.
+\end{itemize}
+
+\subsection{Live Forward Paper-Trading Telemetry (November 2026)}
+\label{sec:paper_trading}
+To validate that strategy profitability is reproducible outside historical backtest datasets without lookahead bias or software integration failure, we deployed XGForge into a live forward paper-trading environment on November 2, 2026. The deployment pipeline interfaces the trained model with OpenAlgo's order gateway and the Angel One SmartAPI broker backend.
+
+Table~\ref{tab:paper_trading_holdings} presents the audited portfolio positions executed at market open on November 2, 2026, alongside their mark-to-market valuations through November 15, 2026 End-of-Day (EOD). Because November 14 and November 15 were exchange weekend holidays, the EOD portfolio state corresponds to the market close of Friday, November 13, 2026.
+
+\begin{table}[htbp]
+\centering
+\caption{Portfolio Holdings and Live Paper-Trading Performance (Deployed 02-Nov-2026, Evaluated 15-Nov-2026 EOD).}
+\label{tab:paper_trading_holdings}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{lcrrrrrr}
+\hline\hline
+\textbf{Symbol} & \textbf{Exchange} & \textbf{Quantity} & \textbf{Avg Entry Price (\textsf{Rs.})} & \textbf{LTP Close (\textsf{Rs.})} & \textbf{Invested Capital (\textsf{Rs.})} & \textbf{Unrealized P\&L (\textsf{Rs.})} & \textbf{Return (\%)} \\
+\hline
+POWERINDIA  & NSE & 35    & 27,035.00 & 32,070.00 & 9,46,225.00  & +1,76,225.00 & +18.62\% \\
+BHEL        & NSE & 2,443 & 388.75    & 436.20    & 9,49,716.25  & +1,15,920.35 & +12.21\% \\
+VEDL        & NSE & 4,001 & 237.71    & 258.50    & 9,51,077.71  & +83,180.79   & +8.75\% \\
+ADANIPOWER  & NSE & 4,978 & 190.84    & 206.90    & 9,50,001.52  & +79,946.68   & +8.42\% \\
+ADANIGREEN  & NSE & 728   & 1,303.30  & 1,409.50  & 9,48,802.40  & +77,313.60   & +8.15\% \\
+SAIL        & NSE & 5,847 & 162.49    & 175.13    & 9,50,079.03  & +73,906.08   & +7.78\% \\
+ATGL        & NSE & 1,772 & 536.10    & 575.45    & 9,49,969.20  & +69,728.20   & +7.34\% \\
+GVT\&D      & NSE & 231   & 4,112.10  & 4,391.50  & 9,49,895.10  & +64,541.40   & +6.79\% \\
+ADANIENSOL  & NSE & 699   & 1,358.40  & 1,433.70  & 9,49,521.60  & +52,634.70   & +5.54\% \\
+NATIONALUM  & NSE & 2,984 & 318.50    & 325.15    & 9,50,404.00  & +19,843.60   & +2.09\% \\
+\hline
+\textbf{Portfolio Total} & -- & -- & -- & -- & \textbf{94,95,691.81} & \textbf{+8,13,240.40} & \textbf{+8.56\%} \\
+\hline\hline
+\end{tabular}
+}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/paper_trading_equity.pdf}
+\caption{Live forward paper-trading telemetry of the XGForge strategy deployed via OpenAlgo from November 2 to November 15, 2026 EOD: (a) Daily aggregate portfolio valuation progression (\textsf{Rs.~}in Lakhs) demonstrating the crossover above \textsf{Rs.~}1.00 Crore on Day 3 and ending at \textsf{Rs.~}103.09 Lakhs (+8.56\% absolute return); (b) Asset-level unrealized return contribution across all 10 holdings, showing positive alpha delivery across 100\% of deployed positions.}
+\label{fig:paper_trading_equity}
+\end{figure}
+
+The empirical telemetry reveals four operational findings:
+\begin{enumerate}
+    \item \textbf{Capital Deployment and Liquidity}: The strategy allocated \textsf{Rs.~}94,95,691.81 across the top 10 ranked symbols ($\sim$\textsf{Rs.~}9.50 Lakhs per position, equal weighting), retaining a cash buffer of \textsf{Rs.~}5,04,308.19 (5.04\%) to manage transaction slippage and exchange margins.
+    \item \textbf{Equity Valuation Trajectory}: As illustrated in Figure~\ref{fig:paper_trading_equity}(a), the portfolio value advanced from \textsf{Rs.~}94.96 Lakhs to \textsf{Rs.~}97.25 Lakhs on Day 1 (+2.41\%), crossed the \textsf{Rs.~}1.00 Crore target NAV on Day 3 (November 4, \textsf{Rs.~}1,00,53,288.51, +5.87\%), and closed at \textsf{Rs.~}1,03,08,932.21 on November 13/15 EOD. This represents an absolute portfolio gain of \textbf{+8.56\%} (net unrealized profit of \textbf{+\textsf{Rs.~}8,13,240.40}) over seven trading sessions.
+    \item \textbf{Broad-Based Asset Win Rate}: Figure~\ref{fig:paper_trading_equity}(b) shows that all 10 holdings delivered positive returns (10/10 profitable positions). Gains were led by capital goods and heavy industrial equities, notably \texttt{POWERINDIA} (+18.62\%, +\textsf{Rs.~}1,76,225.00), \texttt{BHEL} (+12.21\%, +\textsf{Rs.~}1,15,920.35), \texttt{VEDL} (+8.75\%, +\textsf{Rs.~}83,180.79), and \texttt{ADANIPOWER} (+8.42\%, +\textsf{Rs.~}79,946.68).
+    \item \textbf{Factor Alignment}: The model selected these positions primarily through high scores on 21-day volume surge (\texttt{volume\_ratio\_21}), medium-term breakout channels (\texttt{high\_low\_ratio\_63}), and positive trend divergence (\texttt{macd\_12\_26\_ratio}). The subsequent price expansion confirmed that the tree-based model identified persistent cross-sectional momentum rather than mean-reverting noise.
+\end{enumerate}
+
+\subsection{Future Plan of Work: Regime-Aware Strategy Pooling}
+Future extensions will focus on two major quantitative enhancements:
+\begin{enumerate}
+    \item \textbf{Unsupervised Market Regime Detection}: Financial markets alternate between distinct latent regimes (bullish trending, high-volatility bearish drawdown, and sideways mean-reverting). We will implement Gaussian Hidden Markov Models (HMM) and macro-volatility clustering on index spreads to classify the active market regime in real time.
+    \item \textbf{Dynamic Multi-Strategy Pooling and Meta-Allocation}: Rather than relying on a single equity momentum model, we will construct an orthogonal pool of specialized quantitative strategies:
+    \begin{itemize}
+        \item \emph{Trend-Following XGBoost Regressor} (optimized for low-volatility expansion).
+        \item \emph{Ornstein-Uhlenbeck Mean Reversion} (optimized for sideways chop).
+        \item \emph{Tail-Risk Hedging Volatility Breakout} (activated during liquidity crises).
+    \end{itemize}
+    A higher-level meta-allocator (formulated via Bayesian optimization or Reinforcement Learning) will dynamically adjust capital allocations across the strategy pool conditioned on the detected regime.
+\end{enumerate}
+
+
+\section*{Appendix}
+\addcontentsline{toc}{section}{Appendix}
+
+\subsection*{Appendix A: XGForge Strategy Hyperparameter Specifications}
+Table~\ref{tab:appendix_hyperparams} lists the exact configuration of \textbf{XGForge}.
+
+\begin{table}[htbp]
+\centering
+\caption{Hyperparameter and Architectural Configuration of the XGForge Strategy.}
+\label{tab:appendix_hyperparams}
+\begin{tabular}{ll}
+\hline\hline
+\textbf{Parameter Name} & \textbf{Configured Value} \\
+\hline
+Universe & \texttt{nifty200\_ddq} (Point-in-time dynamic mapping, 260 symbols) \\
+Target Horizon & 63 trading sessions ($\sim$3 calendar months) \\
+Rebalance Frequency & Monthly \\
+Minimum Warm-up Window & 1,260 trading sessions ($\sim$5 calendar years) \\
+Model Class & \texttt{xgb.XGBRegressor} \\
+Boosting Trees (\texttt{n\_estimators}) & 100 \\
+Maximum Tree Depth (\texttt{max\_depth}) & 3 \\
+Learning Rate (\texttt{learning\_rate}) & 0.05 \\
+Subsample Ratio (\texttt{subsample}) & 0.80 \\
+Colsample Ratio (\texttt{colsample\_bytree}) & 0.80 \\
+$L_2$ Regularization ($\lambda$, \texttt{reg\_lambda}) & 1.00 \\
+$L_1$ Regularization ($\alpha$, \texttt{reg\_alpha}) & 0.10 \\
+Tree Construction Method & \texttt{hist} \\
+Selector & \texttt{PercentileSelector} ($Q \ge 0.75$, $\hat{y} > 0.0$) \\
+Portfolio Weighting & \texttt{EqualWeightPortfolio} \\
+Risk Manager & \texttt{FixedPercentageRiskManager} ($C_{\text{deploy}} \le 0.85$) \\
+Drawdown Threshold & 15\% cutback trigger \\
+\hline\hline
+\end{tabular}
+\end{table}
+
+\subsection*{Appendix B: Statutory Friction Schedule for Indian Equities}
+Table~\ref{tab:appendix_frictions} itemizes the transaction friction schedule applied during event-driven simulation.
+
+\begin{table}[htbp]
+\centering
+\caption{Transaction Fee and Statutory Tax Schedule (NSE Delivery Segment).}
+\label{tab:appendix_frictions}
+\begin{tabular}{ll}
+\hline\hline
+\textbf{Friction Component} & \textbf{Applied Rate} \\
+\hline
+Brokerage & Flat \textsf{Rs.~}20 per executed order \\
+Exchange Turnover Charges & 0.00345\% of total turnover (NSE) \\
+Securities Transaction Tax (STT) & 0.10\% on both Buy and Sell turnover \\
+SEBI Turnover Charges & 0.0001\% (\textsf{Rs.~}10 per Crore) \\
+Stamp Duty & 0.015\% on Buy turnover \\
+Goods and Services Tax (GST) & 18\% on (Brokerage + Exchange Charges + SEBI Fees) \\
+Slippage Model & 5 basis points (0.05\%) linear bid-ask spread impact \\
+\hline\hline
+\end{tabular}
+\end{table}

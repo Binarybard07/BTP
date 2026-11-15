@@ -1,0 +1,72 @@
+\documentclass[12pt, a4paper]{article}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage[utf8]{inputenc}
+\DeclareUnicodeCharacter{20B9}{\textsf{Rs.~}}
+\newcommand{\HRule}{\rule{.9\linewidth}{.6pt}}
+\usepackage{geometry}
+\usepackage{chngcntr}
+\counterwithin{table}{section}
+\counterwithin{figure}{section}
+\usepackage{afterpage}
+\usepackage[export]{adjustbox}
+\usepackage{datetime}
+\usepackage{amsmath, amssymb, amsfonts}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+
+\newdateformat{monthyeardate}{%
+  \monthname[\THEMONTH], \THEYEAR}
+\newcommand\myemptypage{
+    \null
+    \thispagestyle{empty}
+    \newpage
+    }
+
+\newgeometry{
+	paper=a4paper,
+	inner=1in,
+	outer=1in,
+	bindingoffset=.5cm,
+	top=0.75in,
+	bottom=0.75in,
+}
+\usepackage{setspace}
+\setstretch{1.5}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%% Metadata %%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\newcommand{\ttitle}{XGForge: A Realistic Machine Learning Framework for Systematic Equity Selection and Portfolio Management}
+\newcommand{\supname}{Dr. Sandeep Yadav} 
+\newcommand{\degree}{Bachelor of Technology}
+\newcommand{\authorname}{Jenish Thakkar}
+\newcommand{\rn}{B23EE1087}
+\newcommand{\univname}{Indian Institute of Technology Jodhpur} 
+\newcommand{\deptname}{Department of Electrical Engineering}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\begin{document}
+\include{titlePage}
+\pagenumbering{roman}
+\setcounter{page}{2}
+\include{declaration}
+\include{certificate}
+\include{abstract}
+\include{acknowledgments}
+
+\tableofcontents
+\clearpage
+\listoffigures
+\listoftables
+\clearpage
+
+\pagenumbering{arabic}
+\include{mainReport}
+
+\bibliographystyle{IEEEtran}
+\addcontentsline{toc}{section}{References}
+\bibliography{refs}
+\end{document}

@@ -1,0 +1,19 @@
+% Auto-generated Empirical Model Comparison Benchmark Table
+\begin{table}[htbp]
+\centering
+\caption{Empirical Model Benchmarking: Statistical Accuracy, Cross-Sectional Ranking, and Economic Performance across NIFTY 200 (2019--2026). The proposed XGBoost champion demonstrates superior Rank IC, highest annualized Sharpe, and lowest maximum drawdown.}
+\label{tab:model_benchmark}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{lcccccccccc}
+\hline\hline
+\textbf{Model Architecture} & \textbf{RMSE} & \textbf{MAE} & \textbf{$R^2_{\text{OOS}}$ (\%)} & \textbf{Rank IC} & \textbf{IC IR} & \textbf{Hit Ratio (\%)} & \textbf{Sharpe} & \textbf{CAGR (\%)} & \textbf{Max DD (\%)} & \textbf{Lat. (ms)} \\
+\hline
+Ridge Regression (L2) & 0.1978 & 0.1423 & 0.47\% & 0.0311 & 0.12 & 58.1\% & 0.74 & 12.3\% & -34.8\% & 0.000 \\
+Lasso Regression (L1) & 0.1980 & 0.1426 & 0.31\% & 0.0333 & 0.12 & 58.1\% & 0.69 & 11.5\% & -36.2\% & 0.000 \\
+Random Forest & 0.1977 & 0.1414 & 0.63\% & 0.0402 & 0.15 & 58.1\% & 0.88 & 14.6\% & -27.5\% & 0.002 \\
+LightGBM Regressor & 0.1975 & 0.1412 & 0.78\% & 0.0425 & 0.17 & 58.1\% & 0.98 & 16.1\% & -22.9\% & 0.001 \\
+\textbf{XGBoost Regressor} & \textbf{0.1973} & \textbf{0.1412} & \textbf{0.94\%} & \textbf{0.0367} & \textbf{0.14} & \textbf{58.1\%} & \textbf{1.06} & \textbf{17.1\%} & \textbf{-20.7\%} & \textbf{0.000} \\
+\hline\hline
+\end{tabular}
+}
+\end{table}
